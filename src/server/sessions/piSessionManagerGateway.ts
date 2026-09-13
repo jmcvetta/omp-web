@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getAgentDir, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { canonicalizeStoredCwd, cwdPathsEqual } from "../workingDirectory.js";
-import type { PiSessionListEntry, PiSessionManager, PiSessionManagerGateway } from "./piSessionService.js";
+import type { PiSessionListEntry, PiSessionManager } from "./piSessionService.js";
 
 export const PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
 
@@ -76,36 +76,43 @@ export class SessionDirResolver {
  }
 }
 
-export type PiSessionManagerGatewayOptions = SessionDirResolverOptions;
-
-export function createPiSessionManagerGateway(options: PiSessionManagerGatewayOptions = {}): PiSessionManagerGateway {
- return new SettingsAwarePiSessionManagerGateway(new SessionDirResolver(options));
+export interface PiSessionManagerGateway {
+  list(cwd: string): Promise<PiSessionListEntry[]>;
+  create(cwd: string, _options?: { parentSession?: string }): PiSessionManager;
+  listAll?(): Promise<PiSessionListEntry[]>;
+  open(path: string): Promise<PiSessionManager>;
 }
 
-class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
- constructor(private readonly resolver: SessionDirResolver) { }
+export type PiSessionManagerGatewayOptions = SessionDirResolverOptions;
 
- async list(cwd: string): Promise<PiSessionListEntry[]> {
-  const resolution = this.resolver.resolve(cwd);
-  return filterSessionsForCwd(await listSessionsInDir(resolution.sessionDir), cwd);
- }
+export class DefaultPiSessionManagerGateway implements PiSessionManagerGateway {
+  constructor(private readonly resolver: SessionDirResolver = new SessionDirResolver()) {}
 
- async listAll(): Promise<PiSessionListEntry[]> {
-  const globalEnv = this.resolver.globalEnvSessionDir();
-  const defaultSessions = await listSessionsInDefaultPiStore(this.resolver.defaultSessionsRoot());
-  if (globalEnv === undefined) return defaultSessions;
-  const envSessions = await listSessionsInDir(globalEnv);
-  return [...defaultSessions, ...envSessions].sort((a, b) => b.modified.getTime() - a.modified.getTime());
- }
+  async list(cwd: string): Promise<PiSessionListEntry[]> {
+    const resolution = this.resolver.resolve(cwd);
+    return filterSessionsForCwd(await listSessionsInDir(resolution.sessionDir), cwd);
+  }
 
- create(cwd: string): PiSessionManager {
-  const resolution = this.resolver.resolve(cwd);
-  return SessionManager.create(cwd, resolution.sessionDir);
- }
+  async listAll(): Promise<PiSessionListEntry[]> {
+    const globalEnv = this.resolver.globalEnvSessionDir();
+    const defaultSessions = await listSessionsInDefaultPiStore(this.resolver.defaultSessionsRoot());
+    if (globalEnv === undefined) return defaultSessions;
+    const envSessions = await listSessionsInDir(globalEnv);
+    return [...defaultSessions, ...envSessions].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+  }
 
- async open(path: string): Promise<PiSessionManager> {
-  return SessionManager.open(path, dirname(path));
- }
+  create(cwd: string, _options?: { parentSession?: string }): PiSessionManager {
+    const resolution = this.resolver.resolve(cwd);
+    return SessionManager.create(cwd, resolution.sessionDir);
+  }
+
+  async open(path: string): Promise<PiSessionManager> {
+    return SessionManager.open(path, dirname(path));
+  }
+}
+
+export function createPiSessionManagerGateway(options: PiSessionManagerGatewayOptions = {}): PiSessionManagerGateway {
+  return new DefaultPiSessionManagerGateway(new SessionDirResolver(options));
 }
 export async function listSessionsInDir(sessionDir: string): Promise<PiSessionListEntry[]> {
  // Use SessionManager.list() which lists by cwd but also accepts an explicit

@@ -8,14 +8,9 @@ export interface PiPackageManagerPort {
   flush?(): Promise<void>;
 }
 
-export interface PiPackageService {
-  list(): Promise<PiPackagesResponse>;
-  install(source: string): Promise<PiPackageMutationResponse>;
-  remove(source: string, scope?: PiPackageScope): Promise<PiPackageMutationResponse>;
-  update(source?: string): Promise<PiPackageMutationResponse>;
-}
+export type PiPackageService = Pick<DefaultPiPackageService, "list" | "install" | "remove" | "update">;
 
-export class DefaultPiPackageService implements PiPackageService {
+export class DefaultPiPackageService {
   private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly manager: PiPackageManagerPort) { }

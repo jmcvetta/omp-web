@@ -1,7 +1,6 @@
 import { isRecord } from "../../utils.js";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
 import type { CronStorage } from "./storage.js";
 import type { CronJob } from "./types.js";
@@ -83,7 +82,7 @@ export function createSchedulePromptToolDefinition(
               );
             }
 
-            const jobName = p.name !== undefined && p.name !== "" ? p.name : `job-${nanoid(6)}`;
+            const jobName = p.name !== undefined && p.name !== "" ? p.name : `job-${crypto.randomUUID().slice(0, 6)}`;
 
             if (storage.hasJobWithName(jobName)) {
               throw new Error(
@@ -100,7 +99,7 @@ export function createSchedulePromptToolDefinition(
             const scope = p.scope ?? "session";
             const now = new Date().toISOString();
             const job: CronJob = {
-              id: nanoid(10),
+              id: crypto.randomUUID().replace(/-/g, "").slice(0, 10),
               name: jobName,
               schedule,
               prompt: p.prompt,

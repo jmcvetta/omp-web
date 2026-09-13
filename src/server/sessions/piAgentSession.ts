@@ -4,7 +4,6 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import {
   type AgentSession,
   ModelRegistry,
-  SessionManager,
 } from "@oh-my-pi/pi-coding-agent";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
 import type {
@@ -14,7 +13,6 @@ import type {
   ExtensionUIContext,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type {
-  AskDialogOption,
   AskDialogQuestion,
   AskDialogResult,
 } from "../../shared/apiTypes.js";
@@ -25,7 +23,6 @@ import type {
 import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { isRecord } from "../utils.js";
 import type { SpawnSessionInvocation } from "./spawnSessionTool.js";
-import type { PiSessionListEntry } from "./sessionArchiveHelpers.js";
 
 export type AgentModel = NonNullable<SpawnSessionInvocation["model"]>;
 export type ModelRegistryInstance = ModelRegistry;
@@ -39,17 +36,7 @@ export interface PiSessionManager {
  appendCustomEntry?(customType: string, data?: unknown): string;
 }
 
-export interface PiSessionManagerGateway {
- list(cwd: string): Promise<PiSessionListEntry[]>;
- create(cwd: string, options?: { parentSession?: string }): PiSessionManager;
- /**
-  * Legacy id-only lookup surface for older clients. This intentionally searches
-  * only Pi's default session store, because custom session directories require
-  * a cwd-scoped lookup.
-  */
- listAll?(): Promise<PiSessionListEntry[]>;
- open(path: string): Promise<PiSessionManager>;
-}
+export type { PiSessionManagerGateway } from "./piSessionManagerGateway.js";
 
 interface PiExtensionError {
  extensionPath: string;

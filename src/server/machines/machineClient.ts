@@ -19,11 +19,7 @@ export interface MachineRequestOptions {
   contentType?: string;
 }
 
-export interface MachineClient {
-  request(method: string, path: string, body?: unknown, options?: MachineRequestOptions): Promise<MachineHttpResponse>;
-  requestJson(method: string, path: string, body?: unknown, options?: MachineRequestOptions): Promise<MachineJsonResponse>;
-  connectWebSocket(path: string): WebSocket;
-}
+
 
 export const DEFAULT_REMOTE_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_REMOTE_HEALTH_TIMEOUT_MS = 3_000;
@@ -50,7 +46,9 @@ export class RemoteMachineRequestError extends Error {
   }
 }
 
-export class RemoteMachineClient implements MachineClient {
+export type MachineClient = Pick<RemoteMachineClient, "request" | "requestJson" | "connectWebSocket">;
+
+export class RemoteMachineClient {
   constructor(private readonly machine: Pick<StoredMachine, "baseUrl" | "token" | "headers">, private readonly fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch) {}
 
   async request(method: string, path: string, body?: unknown, options: MachineRequestOptions = {}): Promise<MachineHttpResponse> {

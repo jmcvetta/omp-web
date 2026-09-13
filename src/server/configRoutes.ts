@@ -4,11 +4,6 @@ import type { OmpWebConfigEnvOverrides, OmpWebConfigResponse, OmpWebConfigValues
 import { isOmpWebPluginId } from "../shared/pluginIds.js";
 import { errorMessage, isRecord } from "./utils.js";
 
-export interface OmpWebConfigService {
-  read: () => OmpWebConfigResponse | Promise<OmpWebConfigResponse>;
-  write: (config: OmpWebConfigValues) => OmpWebConfigResponse | Promise<OmpWebConfigResponse>;
-}
-
 export const SELECTED_MACHINE_CONFIG_KEYS = [
   "plugins",
   "pathAccess",
@@ -20,14 +15,21 @@ export const SELECTED_MACHINE_CONFIG_KEYS = [
 
 const SELECTED_MACHINE_CONFIG_KEY_SET = new Set<string>(SELECTED_MACHINE_CONFIG_KEYS);
 
+export class OmpWebConfigService {
+  constructor(readonly options?: LoadOptions) {}
+
+  read(): OmpWebConfigResponse | Promise<OmpWebConfigResponse> {
+    return currentOmpWebConfigResponse(this.options);
+  }
+
+  write(config: OmpWebConfigValues): OmpWebConfigResponse | Promise<OmpWebConfigResponse> {
+    saveOmpWebConfig(config, this.options);
+    return currentOmpWebConfigResponse(this.options);
+  }
+}
+
 export function createFileOmpWebConfigService(options: LoadOptions = {}): OmpWebConfigService {
-  return {
-    read: () => currentOmpWebConfigResponse(options),
-    write: (config) => {
-      saveOmpWebConfig(config, options);
-      return currentOmpWebConfigResponse(options);
-    },
-  };
+  return new OmpWebConfigService(options);
 }
 
 export function currentOmpWebConfigResponse(options: LoadOptions = {}): OmpWebConfigResponse {

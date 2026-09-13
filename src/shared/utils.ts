@@ -7,5 +7,5 @@ export function errorMessage(error: unknown): string {
 }
 
 export function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
+  return typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === code;
 }

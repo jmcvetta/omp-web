@@ -73,18 +73,21 @@ export class DefaultPiPackageProvider implements PiPackageProvider {
   constructor(private readonly cwd?: string, private readonly agentDir?: string) {}
 
   listPackages(): ConfiguredPiPackage[] {
-    if (!this.agentDir) return [];
+    if (this.agentDir === undefined || this.agentDir === "") return [];
     try {
       const raw = readFileSync(join(this.agentDir, "settings.json"), "utf8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed?.packages)) {
-        return parsed.packages.map((source: string) => ({
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && "packages" in parsed && Array.isArray(parsed.packages)) {
+        const pkgList = parsed.packages as unknown[];
+        return pkgList.filter((s): s is string => typeof s === "string").map((source) => ({
           source,
-          scope: "user" as const,
+          scope: "user",
           installedPath: source,
         }));
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
     return [];
   }
 

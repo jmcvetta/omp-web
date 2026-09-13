@@ -504,12 +504,12 @@ function serviceFilePath(backend: NativeServiceBackendKind, ref: NativeServiceRe
 }
 
 function systemdServiceDir(): string {
-  const home = process.env["HOME"] || homedir();
+  const home = process.env["HOME"] ?? homedir();
   return join(home, ".config", "systemd", "user");
 }
 
 function launchdServiceDir(): string {
-  const home = process.env["HOME"] || homedir();
+  const home = process.env["HOME"] ?? homedir();
   return join(home, "Library", "LaunchAgents");
 }
 
