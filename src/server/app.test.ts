@@ -2,10 +2,9 @@ import { mkdir, mkdtemp, realpath, rm, truncate, writeFile } from "node:fs/promi
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { isRecord } from "./utils.js";
-import { buildApp } from "./app.js";
+import { buildApp, type BuiltApp } from "./app.js";
 import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
 import { RemoteMachineRequestError, type MachineClient } from "./machines/machineClient.js";
@@ -21,7 +20,7 @@ import { MAX_IMAGE_PREVIEW_BYTES } from "../shared/workspaceFiles.js";
 import type { PiPackageInfo, OmpWebConfigResponse, OmpWebConfigValues } from "../shared/apiTypes.js";
 import type { Project, Workspace } from "./types.js";
 
-let app: FastifyInstance;
+let app: BuiltApp;
 let tempDir: string;
 let projectDir: string;
 let remoteClient: MachineClient | undefined;
