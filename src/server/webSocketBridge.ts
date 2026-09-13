@@ -1,4 +1,5 @@
 import { WebSocket, type Data } from "ws";
+import type { WSContext } from "hono/ws";
 
 export function bridgeSockets(client: WebSocket, upstream: WebSocket): void {
   const sendToClient = createBufferedSender(client);
@@ -9,6 +10,30 @@ export function bridgeSockets(client: WebSocket, upstream: WebSocket): void {
   upstream.on("close", () => { client.close(); });
   upstream.on("error", () => { client.close(); });
   client.on("error", () => { upstream.close(); });
+}
+
+export function bridgeHonoSocketToUpstream(ws: WSContext, upstream: WebSocket): void {
+  const sendToUpstream = createBufferedSender(upstream);
+
+  upstream.on("message", (data) => {
+    if (typeof data === "string") {
+      ws.send(data);
+    } else if (data instanceof ArrayBuffer) {
+      ws.send(data);
+    } else if (Array.isArray(data)) {
+      ws.send(Buffer.concat(data).toString("utf8"));
+    } else {
+      ws.send(data.toString("utf8"));
+    }
+  });
+
+  upstream.on("close", () => {
+    ws.close();
+  });
+
+  upstream.on("error", () => {
+    ws.close();
+  });
 }
 
 export function createBufferedSender(socket: WebSocket): (data: Data) => void {

@@ -1,5 +1,5 @@
-import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { HonoTestApp } from "../testUtils.js";
 import type { TerminalCommandRun } from "../../shared/apiTypes.js";
 import { ProjectService } from "../projects/projectService.js";
 import type { SessionProxyDaemon } from "../sessiond/sessionProxyRoutes.js";
@@ -8,7 +8,7 @@ import type { Project, Workspace } from "../types.js";
 import { registerWorkspaceDeletionRoutes } from "./workspaceDeletionRoutes.js";
 import { WorkspaceService } from "./workspaceService.js";
 
-let app: FastifyInstance;
+let app: HonoTestApp;
 let daemonRequests: DaemonRequest[];
 let closeStatusCode: number;
 
@@ -41,11 +41,45 @@ const targetWorkspace: Workspace = {
   isGitWorktree: true,
 };
 
-beforeEach(() => {
-  app = Fastify({ logger: false });
+interface DaemonRequest {
+  method: string;
+  path: string;
+  body?: unknown;
+}
+
+function fakeProjects(): ProjectService {
+  return new FakeProjectService();
+}
+
+function fakeWorkspaces(workspaces: Workspace[]): WorkspaceService {
+  return new FakeWorkspaceService(workspaces);
+}
+
+class FakeProjectService extends ProjectService {
+  constructor() {
+    super(new ProjectStore("/dev/null"));
+  }
+
+  override requireProject(projectId: string): Promise<Project> {
+    return projectId === project.id ? Promise.resolve(project) : Promise.reject(new Error("Project not found"));
+  }
+}
+
+class FakeWorkspaceService extends WorkspaceService {
+  constructor(private readonly workspaces: Workspace[]) {
+    super();
+  }
+
+  override list(): Promise<Workspace[]> {
+    return Promise.resolve(this.workspaces);
+  }
+}
+
+beforeEach(async () => {
+  app = new HonoTestApp();
   daemonRequests = [];
   closeStatusCode = 200;
-  registerWorkspaceDeletionRoutes(app, fakeProjects(), fakeWorkspaces([mainWorkspace, targetWorkspace]), fakeDaemon(), "/api");
+  registerWorkspaceDeletionRoutes(app.app, fakeProjects(), fakeWorkspaces([mainWorkspace, targetWorkspace]), fakeDaemon(), "/api");
 });
 
 afterEach(async () => {
@@ -87,7 +121,9 @@ describe("workspace deletion routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "Failed to close workspace terminals: cleanup failed" });
-    expect(daemonRequests).toEqual([{ method: "DELETE", path: `/terminals?cwd=${encodeURIComponent(targetWorkspace.path)}` }]);
+    expect(daemonRequests).toEqual([
+      { method: "DELETE", path: `/terminals?cwd=${encodeURIComponent(targetWorkspace.path)}` },
+    ]);
   });
 
   it("rejects main workspace deletion before touching terminals", async () => {
@@ -98,40 +134,6 @@ describe("workspace deletion routes", () => {
     expect(daemonRequests).toEqual([]);
   });
 });
-
-interface DaemonRequest {
-  method: string;
-  path: string;
-  body?: unknown;
-}
-
-function fakeProjects(): ProjectService {
-  return new FakeProjectService();
-}
-
-function fakeWorkspaces(workspaces: Workspace[]): WorkspaceService {
-  return new FakeWorkspaceService(workspaces);
-}
-
-class FakeProjectService extends ProjectService {
-  constructor() {
-    super(new ProjectStore("/dev/null"));
-  }
-
-  override requireProject(projectId: string): Promise<Project> {
-    return projectId === project.id ? Promise.resolve(project) : Promise.reject(new Error("Project not found"));
-  }
-}
-
-class FakeWorkspaceService extends WorkspaceService {
-  constructor(private readonly workspaces: Workspace[]) {
-    super();
-  }
-
-  override list(): Promise<Workspace[]> {
-    return Promise.resolve(this.workspaces);
-  }
-}
 
 function fakeDaemon(): SessionProxyDaemon {
   return {
@@ -156,6 +158,7 @@ function fakeDaemon(): SessionProxyDaemon {
           title: "Delete workspace: feature/branch",
           command: "git worktree remove '/repo/feature path'",
           status: "running",
+          startedAt: "2026-05-25T00:00:00.000Z",
           createdAt: "2026-05-25T00:00:00.000Z",
           metadata: {
             "pi.operation": "workspace.delete",

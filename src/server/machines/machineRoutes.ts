@@ -1,54 +1,60 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import { MachineService, type CreateMachineInput, type UpdateMachineInput } from "./machineService.js";
 import { errorMessage } from "../utils.js";
 
-export function registerMachineRoutes(app: FastifyInstance, machines = new MachineService()): void {
-  app.get("/api/machines", async () => ({ machines: await machines.list() }));
+export function registerMachineRoutes(app: Hono, machines = new MachineService()): void {
+  app.get("/api/machines", async (c) => c.json({ machines: await machines.list() }));
 
-  app.post<{ Body: CreateMachineInput }>("/api/machines", async (request, reply) => {
+  app.post("/api/machines", async (c) => {
     try {
-      return await machines.add(request.body);
+      const body = await c.req.json<CreateMachineInput>();
+      return c.json(await machines.add(body));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.get<{ Params: { machineId: string } }>("/api/machines/:machineId/health", async (request, reply) => {
-    const health = await machines.health(request.params.machineId);
-    if (health === undefined) return reply.code(404).send({ error: "Machine not found" });
-    return health;
+  app.get("/api/machines/:machineId/health", async (c) => {
+    const machineId = c.req.param("machineId");
+    const health = await machines.health(machineId);
+    if (health === undefined) return c.json({ error: "Machine not found" }, 404);
+    return c.json(health);
   });
 
-  app.get<{ Params: { machineId: string } }>("/api/machines/:machineId/runtime", async (request, reply) => {
-    const runtime = await machines.runtime(request.params.machineId);
-    if (runtime === undefined) return reply.code(404).send({ error: "Machine not found" });
-    return runtime;
+  app.get("/api/machines/:machineId/runtime", async (c) => {
+    const machineId = c.req.param("machineId");
+    const runtime = await machines.runtime(machineId);
+    if (runtime === undefined) return c.json({ error: "Machine not found" }, 404);
+    return c.json(runtime);
   });
 
-  app.get<{ Params: { machineId: string } }>("/api/machines/:machineId", async (request, reply) => {
-    const machine = await machines.get(request.params.machineId);
-    if (machine === undefined) return reply.code(404).send({ error: "Machine not found" });
-    return machine;
+  app.get("/api/machines/:machineId", async (c) => {
+    const machineId = c.req.param("machineId");
+    const machine = await machines.get(machineId);
+    if (machine === undefined) return c.json({ error: "Machine not found" }, 404);
+    return c.json(machine);
   });
 
-  app.patch<{ Params: { machineId: string }; Body: UpdateMachineInput }>("/api/machines/:machineId", async (request, reply) => {
+  app.patch("/api/machines/:machineId", async (c) => {
     try {
-      const machine = await machines.update(request.params.machineId, request.body);
-      if (machine === undefined) return await reply.code(404).send({ error: "Machine not found" });
-      return machine;
+      const machineId = c.req.param("machineId");
+      const body = await c.req.json<UpdateMachineInput>();
+      const machine = await machines.update(machineId, body);
+      if (machine === undefined) return c.json({ error: "Machine not found" }, 404);
+      return c.json(machine);
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.delete<{ Params: { machineId: string } }>("/api/machines/:machineId", async (request, reply) => {
+  app.delete("/api/machines/:machineId", async (c) => {
     try {
-      const removed = await machines.remove(request.params.machineId);
-      if (!removed) return await reply.code(404).send({ error: "Machine not found" });
-      return { deleted: true };
+      const machineId = c.req.param("machineId");
+      const removed = await machines.remove(machineId);
+      if (!removed) return c.json({ error: "Machine not found" }, 404);
+      return c.json({ deleted: true });
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 }
-

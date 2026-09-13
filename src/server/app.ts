@@ -1,9 +1,9 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
-import fastifyStatic from "@fastify/static";
-import fastifyWebsocket from "@fastify/websocket";
+import { Hono } from "hono";
+import { createBunWebSocket } from "hono/bun";
+import { serveStatic } from "hono/bun";
 import { ProjectStore } from "./storage/projectStore.js";
 import { ProjectService } from "./projects/projectService.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
@@ -41,49 +41,66 @@ export interface AppDependencies {
   piPackages?: PiPackageService;
   config?: OmpWebConfigService;
   clientDist?: string | false;
-  logger?: FastifyServerOptions["logger"];
+  logger?: unknown;
   /** Maximum accepted HTTP request body size in bytes. */
   bodyLimit?: number;
+}
+
+export interface BuiltApp {
+  readonly hono: Hono;
+  readonly websocket: ReturnType<typeof createBunWebSocket>["websocket"];
+  close(): Promise<void>;
+  ready(): Promise<void>;
+  inject(options: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }): Promise<{
+    statusCode: number;
+    headers: Record<string, string>;
+    body: string;
+    json<T = unknown>(): T;
+  }>;
 }
 
 interface LocalProjectRouteOptions {
   config?: Pick<OmpWebConfigService, "read">;
 }
 
-function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix: string, options: LocalProjectRouteOptions = {}): void {
-  app.get(`${prefix}/projects`, async () => projects.list());
+function registerLocalProjectRoutes(app: Hono, projects: ProjectService, workspaces: WorkspaceService, prefix: string, options: LocalProjectRouteOptions = {}): void {
+  app.get(`${prefix}/projects`, async (c) => c.json(await projects.list()));
 
-  app.post<{ Body: { name?: string; path: string; create?: boolean } }>(`${prefix}/projects`, async (request, reply) => {
+  app.post(`${prefix}/projects`, async (c) => {
     try {
-      return await projects.add(request.body);
+      const body = await c.req.json<{ name?: string; path: string; create?: boolean }>();
+      return c.json(await projects.add(body));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.delete<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId`, async (request, reply) => {
+  app.delete(`${prefix}/projects/:projectId`, async (c) => {
     try {
-      await projects.close(request.params.projectId);
-      return { closed: true };
+      const projectId = c.req.param("projectId");
+      await projects.close(projectId);
+      return c.json({ closed: true });
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
 
-  app.get<{ Querystring: { q?: string } }>(`${prefix}/project-directories`, async (request, reply) => {
+  app.get(`${prefix}/project-directories`, async (c) => {
     try {
-      return await listDirectorySuggestions(request.query.q ?? "");
+      const q = c.req.query("q") ?? "";
+      return c.json(await listDirectorySuggestions(q));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId/workspaces`, async (request, reply) => {
+  app.get(`${prefix}/projects/:projectId/workspaces`, async (c) => {
     try {
-      const project = await projects.requireProject(request.params.projectId);
-      return await listWorkspacesWithEffectiveConfig(project, workspaces, options.config);
+      const projectId = c.req.param("projectId");
+      const project = await projects.requireProject(projectId);
+      return c.json(await listWorkspacesWithEffectiveConfig(project, workspaces, options.config));
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
 }
@@ -105,24 +122,28 @@ interface LocalFileSuggestionRouteOptions {
   config?: Pick<OmpWebConfigService, "read">;
 }
 
-function registerLocalFileSuggestionRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix: string, options: LocalFileSuggestionRouteOptions = {}): void {
-  app.get<{ Querystring: { cwd?: string; q?: string; kind?: "tracked" | "untracked" | "other"; mode?: "file" | "path"; scope?: "tracked" | "all" } }>(`${prefix}/files`, async (request, reply) => {
-    if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
+function registerLocalFileSuggestionRoutes(app: Hono, projects: ProjectService, workspaces: WorkspaceService, prefix: string, options: LocalFileSuggestionRouteOptions = {}): void {
+  app.get(`${prefix}/files`, async (c) => {
+    const cwd = c.req.query("cwd");
+    if (cwd === undefined || cwd === "") return c.json({ error: "cwd query parameter is required" }, 400);
     try {
-      const cwd = normalizeRequestCwd(request.query.cwd);
-      const query = request.query.q ?? "";
-      const pathAccess = isAbsoluteishFileSuggestionQuery(query) ? await pathAccessForCwd(cwd, projects, workspaces, options.config) : undefined;
-      if (request.query.mode === "path") return await listPathSuggestions(cwd, query, pathAccess);
-      return await listFileSuggestions(cwd, query, { kind: request.query.kind, scope: request.query.scope, pathAccess });
+      const normalized = normalizeRequestCwd(cwd);
+      const query = c.req.query("q") ?? "";
+      const pathAccess = isAbsoluteishFileSuggestionQuery(query) ? await pathAccessForCwd(normalized, projects, workspaces, options.config) : undefined;
+      const mode = c.req.query("mode");
+      const kind = c.req.query("kind") as "tracked" | "untracked" | "other" | undefined;
+      const scope = c.req.query("scope") as "tracked" | "all" | undefined;
+      if (mode === "path") return c.json(await listPathSuggestions(normalized, query, pathAccess));
+      return c.json(await listFileSuggestions(normalized, query, { kind, scope, pathAccess }));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 }
 
-export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: deps.logger ?? true, ...(deps.bodyLimit === undefined ? {} : { bodyLimit: deps.bodyLimit }) });
-  await app.register(fastifyWebsocket);
+export async function buildApp(deps: AppDependencies = {}): Promise<BuiltApp> {
+  const app = new Hono();
+  const { upgradeWebSocket, websocket } = createBunWebSocket();
 
   const projects = deps.projects ?? new ProjectService(new ProjectStore());
   const workspaces = deps.workspaces ?? new WorkspaceService();
@@ -131,27 +152,32 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const configService = deps.config ?? createFileOmpWebConfigService();
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const ompWebStatusCache = createOmpWebStatusCache(() => getOmpWebStatus(sessionDaemon), {
-    onError: (error) => { app.log.warn({ err: error }, "failed to refresh PI WEB status cache"); },
+    onError: (error) => { console.warn("failed to refresh PI WEB status cache", error); },
   });
   const machines = deps.machines ?? new MachineService(undefined, {
     localRuntime: () => getOmpWebRuntime(sessionDaemon),
   });
 
-  app.get("/omp-web-plugins/manifest.json", async () => ompWebPlugins.manifest());
+  app.get("/omp-web-plugins/manifest.json", async (c) => c.json(await ompWebPlugins.manifest()));
 
-  app.get<{ Params: { pluginId: string; "*": string } }>("/omp-web-plugins/:pluginId/*", async (request, reply) => {
-    if (await proxyMachinePluginAsset(machines, request.params.pluginId, request.params["*"], request.url, reply)) return;
+  app.get("/omp-web-plugins/:pluginId/*", async (c) => {
+    const pluginId = c.req.param("pluginId");
+    const wildcard = c.req.path.slice(`/omp-web-plugins/${encodeURIComponent(pluginId)}/`.length);
+    const proxyRes = await proxyMachinePluginAsset(machines, pluginId, wildcard, c.req.url);
+    if (proxyRes !== null) return proxyRes;
 
-    const asset = await ompWebPlugins.readAsset(request.params.pluginId, request.params["*"]);
-    if (asset === undefined) return reply.code(404).send({ error: "Plugin asset not found" });
-    return reply.type(asset.contentType).send(asset.content);
+    const asset = await ompWebPlugins.readAsset(pluginId, wildcard);
+    if (asset === undefined) return c.json({ error: "Plugin asset not found" }, 404);
+    return new Response(asset.content as unknown as BodyInit, {
+      headers: { "Content-Type": asset.contentType },
+    });
   });
 
-  app.get("/api/omp-web/status", async () => ompWebStatusCache.get());
-  app.get("/api/omp-web/version", async () => getOmpWebVersionStatus(sessionDaemon));
-  app.get("/api/omp-web/runtime", async () => getOmpWebRuntime(sessionDaemon));
-  app.get("/api/plugins", async () => ompWebPlugins.plugins());
-  app.get("/api/machines/local/plugins", async () => ompWebPlugins.plugins());
+  app.get("/api/omp-web/status", async (c) => c.json(await ompWebStatusCache.get()));
+  app.get("/api/omp-web/version", async (c) => c.json(await getOmpWebVersionStatus(sessionDaemon)));
+  app.get("/api/omp-web/runtime", async (c) => c.json(await getOmpWebRuntime(sessionDaemon)));
+  app.get("/api/plugins", async (c) => c.json(await ompWebPlugins.plugins()));
+  app.get("/api/machines/local/plugins", async (c) => c.json(await ompWebPlugins.plugins()));
   registerPiPackageRoutes(app, piPackages);
   registerPiPackageRoutes(app, piPackages, "/api/machines/local");
   registerConfigRoutes(app, configService);
@@ -163,31 +189,78 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   registerLocalProjectRoutes(app, projects, workspaces, "/api", { config: configService });
   registerLocalProjectRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
 
-  registerSessionProxyRoutes(app, sessionDaemon);
-  registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local");
+  registerSessionProxyRoutes(app, sessionDaemon, "/api", upgradeWebSocket);
+  registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local", upgradeWebSocket);
   registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api", { config: configService });
   registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
   registerGitRoutes(app, projects, workspaces);
   registerGitRoutes(app, projects, workspaces, "/api/machines/local");
-  registerTerminalProxyRoutes(app, projects, workspaces, sessionDaemon);
-  registerTerminalProxyRoutes(app, projects, workspaces, sessionDaemon, "/api/machines/local");
+  registerTerminalProxyRoutes(app, projects, workspaces, sessionDaemon, "/api", upgradeWebSocket);
+  registerTerminalProxyRoutes(app, projects, workspaces, sessionDaemon, "/api/machines/local", upgradeWebSocket);
   registerWorkspaceDeletionRoutes(app, projects, workspaces, sessionDaemon);
   registerWorkspaceDeletionRoutes(app, projects, workspaces, sessionDaemon, "/api/machines/local");
 
   registerLocalFileSuggestionRoutes(app, projects, workspaces, "/api", { config: configService });
   registerLocalFileSuggestionRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
 
-  registerMachineProxyRoutes(app, machines);
+  registerMachineProxyRoutes(app, machines, upgradeWebSocket);
 
-  const pushService = new PushNotificationService((msg) => { app.log.warn({ service: "push" }, msg); });
+  const pushService = new PushNotificationService((msg) => { console.warn("[push]", msg); });
   registerPushRoutes(app, pushService);
 
   const packagedClientDist = join(dirname(fileURLToPath(import.meta.url)), "..", "client");
   const clientDist = deps.clientDist ?? (existsSync(packagedClientDist) ? packagedClientDist : join(process.cwd(), "dist", "client"));
   if (clientDist !== false && existsSync(clientDist)) {
-    await app.register(fastifyStatic, { root: clientDist });
-    app.setNotFoundHandler((_request, reply) => reply.sendFile("index.html"));
+    app.use("/*", serveStatic({ root: clientDist }));
+    app.notFound((c) => {
+      const indexHtmlPath = join(clientDist, "index.html");
+      if (existsSync(indexHtmlPath)) {
+        return c.html(readFileSync(indexHtmlPath, "utf8"));
+      }
+      return c.text("Not found", 404);
+    });
   }
 
-  return app;
+  return {
+    hono: app,
+    websocket,
+    async ready() { },
+    async close() { },
+    async inject(options: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }) {
+      const isBuffer = Buffer.isBuffer(options.payload) || options.payload instanceof Uint8Array;
+      const isJsonPayload = options.payload !== undefined && !isBuffer && typeof options.payload !== "string";
+      const headers: Record<string, string> = {
+        ...(isJsonPayload ? { "content-type": "application/json" } : {}),
+        ...options.headers,
+      };
+
+      let body: BodyInit | null = null;
+      if (isBuffer) {
+        body = options.payload as unknown as BodyInit;
+      } else if (typeof options.payload === "string") {
+        body = options.payload;
+      } else if (options.payload !== undefined) {
+        body = JSON.stringify(options.payload);
+      }
+
+      const init: RequestInit = {
+        method: options.method,
+        headers,
+      };
+      if (body !== null) {
+        init.body = body;
+      }
+
+      const response = await app.request(options.url, init);
+      const text = await response.text();
+      return {
+        statusCode: response.status,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: text,
+        json<T = unknown>(): T {
+          return JSON.parse(text);
+        },
+      };
+    },
+  };
 }

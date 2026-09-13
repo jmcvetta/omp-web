@@ -1,44 +1,47 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { Hono } from "hono";
 import type { PiPackageScope } from "../shared/apiTypes.js";
 import { createDefaultPiPackageService, type PiPackageService } from "./piPackageService.js";
 import { errorMessage, isRecord } from "./utils.js";
 
-class PiPackageRequestValidationError extends Error {}
+class PiPackageRequestValidationError extends Error { }
 
-export function registerPiPackageRoutes(app: FastifyInstance, service: PiPackageService = createDefaultPiPackageService(), prefix = "/api"): void {
+export function registerPiPackageRoutes(app: Hono, service: PiPackageService = createDefaultPiPackageService(), prefix = "/api"): void {
   const routePrefix = normalizeRoutePrefix(prefix);
 
-  app.get(`${routePrefix}/pi-packages`, async (_request, reply) => {
+  app.get(`${routePrefix}/pi-packages`, async (c) => {
     try {
-      return await service.list();
+      return c.json(await service.list());
     } catch (error) {
-      return sendPiPackageError(reply, error);
+      return sendPiPackageError(c, error);
     }
   });
 
-  app.post<{ Body: unknown }>(`${routePrefix}/pi-packages/install`, async (request, reply) => {
+  app.post(`${routePrefix}/pi-packages/install`, async (c) => {
     try {
-      return await service.install(parseRequiredSourceRequest(request.body));
+      const body = await c.req.json().catch(() => undefined);
+      return c.json(await service.install(parseRequiredSourceRequest(body)));
     } catch (error) {
-      return sendPiPackageError(reply, error);
+      return sendPiPackageError(c, error);
     }
   });
 
-  app.post<{ Body: unknown }>(`${routePrefix}/pi-packages/remove`, async (request, reply) => {
+  app.post(`${routePrefix}/pi-packages/remove`, async (c) => {
     try {
-      const body = requireRequestObject(request.body);
-      return await service.remove(parseRequiredSource(body["source"]), parseOptionalScope(body["scope"]));
+      const rawBody = await c.req.json().catch(() => undefined);
+      const body = requireRequestObject(rawBody);
+      return c.json(await service.remove(parseRequiredSource(body["source"]), parseOptionalScope(body["scope"])));
     } catch (error) {
-      return sendPiPackageError(reply, error);
+      return sendPiPackageError(c, error);
     }
   });
 
-  app.post<{ Body: unknown }>(`${routePrefix}/pi-packages/update`, async (request, reply) => {
+  app.post(`${routePrefix}/pi-packages/update`, async (c) => {
     try {
-      const source = parseOptionalUpdateSource(request.body);
-      return source === undefined ? await service.update() : await service.update(source);
+      const rawBody = await c.req.json().catch(() => undefined);
+      const source = parseOptionalUpdateSource(rawBody);
+      return c.json(source === undefined ? await service.update() : await service.update(source));
     } catch (error) {
-      return sendPiPackageError(reply, error);
+      return sendPiPackageError(c, error);
     }
   });
 }
@@ -79,8 +82,7 @@ function requireRequestObject(value: unknown): Record<string, unknown> {
   return value;
 }
 
-function sendPiPackageError(reply: FastifyReply, error: unknown): FastifyReply {
+function sendPiPackageError(c: { json(body: unknown, status?: number): Response }, error: unknown): Response {
   const status = error instanceof PiPackageRequestValidationError ? 400 : 500;
-  return reply.code(status).send({ error: errorMessage(error) });
+  return c.json({ error: errorMessage(error) }, status);
 }
-

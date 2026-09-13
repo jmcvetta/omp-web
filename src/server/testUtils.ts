@@ -52,6 +52,8 @@ export class HonoTestApp {
     };
   }
 
+  async ready(): Promise<void> {}
+
   async close(): Promise<void> {
     // No-op for Hono in-memory app
   }

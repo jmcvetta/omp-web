@@ -1,132 +1,161 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { Context, Hono } from "hono";
+import type { UpgradeWebSocket } from "hono/ws";
 import type { WebSocket } from "ws";
 import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, type FederatedHttpRouteSpec } from "../../shared/federatedRoutes.js";
 import { mergeSelectedMachineConfig, parseOmpWebConfigResponseBody, parseSelectedMachineConfigRequest, selectedMachineConfigResponse } from "../configRoutes.js";
-import { bridgeSockets } from "../webSocketBridge.js";
+import { bridgeHonoSocketToUpstream } from "../webSocketBridge.js";
 import { type MachineClient, type MachineJsonResponse, type MachineRequestOptions } from "./machineClient.js";
 import { MachineService } from "./machineService.js";
-import { applySafeHeaders, sendGatewayError } from "./proxyUtils.js";
+import { filterSafeHeaders, sendGatewayErrorResponse } from "./proxyUtils.js";
 import { errorMessage, isRecord } from "../utils.js";
 
 export const REMOTE_HTTP_ROUTES = FEDERATED_HTTP_ROUTES;
 export const REMOTE_WEBSOCKET_ROUTES = FEDERATED_WEBSOCKET_ROUTES;
 
-
-export function registerMachineProxyRoutes(app: FastifyInstance, machines = new MachineService()): void {
+export function registerMachineProxyRoutes(
+  app: Hono,
+  machines = new MachineService(),
+  upgradeWebSocket?: UpgradeWebSocket,
+): void {
   for (const spec of REMOTE_HTTP_ROUTES) {
-    app.route<{ Params: { machineId: string }; Body: unknown }>({
-      method: spec.method,
-      url: `/api/machines/:machineId${spec.path}`,
-      handler: (request, reply) => proxyHttpRequest(machines, spec, request.params.machineId, request.method, request.url, request.body, request.headers["content-type"], reply),
-    });
+    const routePath = `/api/machines/:machineId${spec.path}`;
+    const handler = async (c: Context): Promise<Response> => {
+      const machineId = c.req.param("machineId") ?? "";
+      const method = c.req.method;
+      const contentType = c.req.header("content-type");
+      let body: unknown;
+      if (method !== "GET" && method !== "HEAD") {
+        if (contentType?.includes("application/octet-stream") || contentType?.includes("image/")) {
+          body = Buffer.from(await c.req.raw.arrayBuffer());
+        } else {
+          body = await c.req.raw.json().catch(() => undefined);
+        }
+      }
+      return proxyHttpRequest(machines, spec, machineId, method, c.req.url, body, contentType);
+    };
+
+    if (spec.method === "GET") app.get(routePath, handler);
+    else if (spec.method === "POST") app.post(routePath, handler);
+    else if (spec.method === "PUT") app.put(routePath, handler);
+    else if (spec.method === "DELETE") app.delete(routePath, handler);
   }
 
-  for (const path of REMOTE_WEBSOCKET_ROUTES) {
-    app.get<{ Params: { machineId: string } }>(`/api/machines/:machineId${path}`, { websocket: true }, async (socket, request) => {
-      await proxyWebSocket(machines, request.params.machineId, request.url, socket);
-    });
+  if (upgradeWebSocket !== undefined) {
+    for (const path of REMOTE_WEBSOCKET_ROUTES) {
+      app.get(`/api/machines/:machineId${path}`, upgradeWebSocket((c) => {
+        const machineId = c.req.param("machineId") ?? "";
+        let upstream: WebSocket | undefined;
+
+        return {
+          async onOpen(_evt, ws) {
+            if (machineId === "local") {
+              ws.close(1011, "Local machine route is not registered for this endpoint");
+              return;
+            }
+            const client = await machines.remoteClient(machineId);
+            if (client === undefined) {
+              ws.close(1011, "Remote machine not found");
+              return;
+            }
+            try {
+              upstream = client.connectWebSocket(remoteApiPath(machineId, c.req.url));
+              bridgeHonoSocketToUpstream(ws, upstream);
+            } catch {
+              ws.close(1011, "Remote machine unavailable");
+            }
+          },
+          onClose() {
+            upstream?.close();
+          },
+          onError() {
+            upstream?.close();
+          },
+        };
+      }));
+    }
   }
 }
 
-async function proxyHttpRequest(machines: MachineService, spec: FederatedHttpRouteSpec, machineId: string, method: string, requestUrl: string, body: unknown, contentType: string | string[] | undefined, reply: FastifyReply): Promise<FastifyReply> {
+async function proxyHttpRequest(machines: MachineService, spec: FederatedHttpRouteSpec, machineId: string, method: string, requestUrl: string, body: unknown, contentType: string | undefined): Promise<Response> {
   if (machineId === "local") {
-    return reply.code(501).send({ error: "Local machine route is not registered for this endpoint" });
+    return Response.json({ error: "Local machine route is not registered for this endpoint" }, { status: 501 });
   }
 
   const client = await machines.remoteClient(machineId);
   if (client === undefined) {
-    return reply.code(404).send({ error: "Machine not found" });
+    return Response.json({ error: "Machine not found" }, { status: 404 });
   }
 
   try {
     const remotePath = remoteApiPath(machineId, requestUrl);
-    if (spec.path === "/config") return await proxySelectedMachineConfigRequest(client, machineId, method, remotePath, body, reply);
+    if (spec.path === "/config") return await proxySelectedMachineConfigRequest(client, machineId, method, remotePath, body);
 
     const requestOptions = proxyRequestOptions(spec, body, contentType);
     const upstream = requestOptions === undefined
       ? await client.request(method, remotePath, body)
       : await client.request(method, remotePath, body, requestOptions);
-    reply.code(upstream.statusCode);
-    applySafeHeaders(reply, upstream.headers);
-    if (upstream.body === undefined) return await reply.send();
-    return await reply.send(upstream.body);
+
+    const headers = filterSafeHeaders(upstream.headers);
+    return new Response(upstream.body as unknown as BodyInit, { status: upstream.statusCode, headers });
   } catch (error) {
-    if (isSelectedMachineConfigRequestError(error)) return reply.code(400).send({ error: errorMessage(error) });
-    return sendGatewayError(reply, machineId, error);
+    if (isSelectedMachineConfigRequestError(error)) return Response.json({ error: errorMessage(error) }, { status: 400 });
+    return sendGatewayErrorResponse(machineId, error);
   }
 }
 
-async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, remotePath: string, body: unknown, reply: FastifyReply): Promise<FastifyReply> {
+async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, remotePath: string, body: unknown): Promise<Response> {
   if (method === "GET") {
-    return sendSelectedMachineConfigResponse(reply, await client.requestJson("GET", remotePath), machineId);
+    return sendSelectedMachineConfigResponse(await client.requestJson("GET", remotePath), machineId);
   }
 
   if (method === "PUT") {
     const patch = parseSelectedMachineConfigRequest(configPayload(body));
     const currentResponse = await client.requestJson("GET", remotePath);
-    if (!isSuccessfulStatus(currentResponse.statusCode)) return sendUpstreamJsonResponse(reply, currentResponse, machineId);
+    if (!isSuccessfulStatus(currentResponse.statusCode)) return sendUpstreamJsonResponse(currentResponse, machineId);
 
     const current = parseOmpWebConfigResponseBody(currentResponse.body, "Remote machine config response");
     const merged = mergeSelectedMachineConfig(current.config, patch);
-    return sendSelectedMachineConfigResponse(reply, await client.requestJson("PUT", remotePath, { config: merged }), machineId);
+    return sendSelectedMachineConfigResponse(await client.requestJson("PUT", remotePath, { config: merged }), machineId);
   }
 
-  return reply.code(405).send({ error: "Method not allowed" });
+  return Response.json({ error: "Method not allowed" }, { status: 405 });
 }
 
 function configPayload(body: unknown): unknown {
   return isRecord(body) ? body["config"] : undefined;
 }
 
-function sendSelectedMachineConfigResponse(reply: FastifyReply, upstream: MachineJsonResponse, machineId: string): FastifyReply {
-  if (!isSuccessfulStatus(upstream.statusCode)) return sendUpstreamJsonResponse(reply, upstream, machineId);
-  reply.code(upstream.statusCode);
-  applySafeHeaders(reply, upstream.headers);
-  return reply.send(selectedMachineConfigResponse(parseOmpWebConfigResponseBody(upstream.body, "Remote machine config response")));
+function sendSelectedMachineConfigResponse(upstream: MachineJsonResponse, machineId: string): Response {
+  if (!isSuccessfulStatus(upstream.statusCode)) return sendUpstreamJsonResponse(upstream, machineId);
+  const headers = filterSafeHeaders(upstream.headers);
+  const data = selectedMachineConfigResponse(parseOmpWebConfigResponseBody(upstream.body, "Remote machine config response"));
+  return Response.json(data, { status: upstream.statusCode, headers });
 }
 
-function sendUpstreamJsonResponse(reply: FastifyReply, upstream: MachineJsonResponse, machineId: string): FastifyReply {
-  reply.code(upstream.statusCode);
-  applySafeHeaders(reply, upstream.headers);
-  return reply.send(upstream.body ?? { error: "Remote machine config request failed", machineId, statusCode: upstream.statusCode });
+function sendUpstreamJsonResponse(upstream: MachineJsonResponse, machineId: string): Response {
+  const headers = filterSafeHeaders(upstream.headers);
+  const payload = upstream.body ?? { error: "Remote machine config request failed", machineId, statusCode: upstream.statusCode };
+  return Response.json(payload, { status: upstream.statusCode, headers });
 }
 
 function isSuccessfulStatus(statusCode: number): boolean {
   return statusCode >= 200 && statusCode < 300;
 }
 
-async function proxyWebSocket(machines: MachineService, machineId: string, requestUrl: string, socket: WebSocket): Promise<void> {
-  if (machineId === "local") {
-    socket.close(1011, "Local machine route is not registered for this endpoint");
-    return;
-  }
-
-  const client = await machines.remoteClient(machineId);
-  if (client === undefined) {
-    socket.close(1008, "Machine not found");
-    return;
-  }
-
-  try {
-    bridgeSockets(socket, client.connectWebSocket(remoteApiPath(machineId, requestUrl)));
-  } catch {
-    socket.close(1011, "Remote machine unavailable");
-  }
-}
-
 function remoteApiPath(machineId: string, requestUrl: string): string {
   const machinePrefix = `/api/machines/${encodeURIComponent(machineId)}`;
-  const stripped = requestUrl.startsWith(machinePrefix) ? requestUrl.slice(machinePrefix.length) : requestUrl;
+  const url = new URL(requestUrl, "http://localhost");
+  const fullPath = url.pathname + url.search;
+  const stripped = fullPath.startsWith(machinePrefix) ? fullPath.slice(machinePrefix.length) : fullPath;
   const compatPath = stripped.startsWith("/") ? stripped : `/${stripped}`;
   return `/api${compatPath}`;
 }
 
-function proxyRequestOptions(spec: Pick<FederatedHttpRouteSpec, "timeoutMs">, body: unknown, contentType: string | string[] | undefined): MachineRequestOptions | undefined {
+function proxyRequestOptions(spec: Pick<FederatedHttpRouteSpec, "timeoutMs">, body: unknown, contentType: string | undefined): MachineRequestOptions | undefined {
   const options: MachineRequestOptions = {};
   if (spec.timeoutMs !== undefined) options.timeoutMs = spec.timeoutMs;
-  if (isRawProxyBody(body)) {
-    const value = firstHeaderValue(contentType);
-    if (value !== undefined && value !== "") options.contentType = value;
+  if (isRawProxyBody(body) && contentType !== undefined && contentType !== "") {
+    options.contentType = contentType;
   }
   return Object.keys(options).length === 0 ? undefined : options;
 }
@@ -135,12 +164,6 @@ function isRawProxyBody(body: unknown): boolean {
   return typeof body === "string" || body instanceof ArrayBuffer || ArrayBuffer.isView(body);
 }
 
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-
 function isSelectedMachineConfigRequestError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith("PI WEB selected-machine config");
 }
-

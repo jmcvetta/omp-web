@@ -1,19 +1,18 @@
-import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { HonoTestApp } from "./testUtils.js";
 import type { PiPackageInfo } from "../shared/apiTypes.js";
 import type { PiPackageService } from "./piPackageService.js";
 import { registerPiPackageRoutes } from "./piPackageRoutes.js";
 
-let app: FastifyInstance;
+let app: HonoTestApp;
 let service: PiPackageService;
 let serviceMocks: ReturnType<typeof fakePiPackageService>;
 
 beforeEach(async () => {
   serviceMocks = fakePiPackageService();
   service = serviceMocks.service;
-  app = Fastify({ logger: false });
-  registerPiPackageRoutes(app, service);
-  await app.ready();
+  app = new HonoTestApp();
+  registerPiPackageRoutes(app.app, service);
 });
 
 afterEach(async () => {
@@ -30,10 +29,9 @@ describe("registerPiPackageRoutes", () => {
   });
 
   it("registers package routes under a custom API prefix", async () => {
-    const prefixedApp = Fastify({ logger: false });
+    const prefixedApp = new HonoTestApp();
     const prefixedMocks = fakePiPackageService();
-    registerPiPackageRoutes(prefixedApp, prefixedMocks.service, "/api/machines/local");
-    await prefixedApp.ready();
+    registerPiPackageRoutes(prefixedApp.app, prefixedMocks.service, "/api/machines/local");
 
     try {
       const response = await prefixedApp.inject({ method: "GET", url: "/api/machines/local/pi-packages" });
@@ -87,7 +85,7 @@ describe("registerPiPackageRoutes", () => {
     expect(blankSource.statusCode).toBe(400);
     expect(blankSource.json()).toEqual({ error: "Pi package source must be a non-empty string" });
     expect(invalidScope.statusCode).toBe(400);
-    expect(invalidScope.json()).toEqual({ error: "Pi package scope must be \"user\" or \"project\"" });
+    expect(invalidScope.json()).toEqual({ error: 'Pi package scope must be "user" or "project"' });
     expect(invalidUpdate.statusCode).toBe(400);
     expect(invalidUpdate.json()).toEqual({ error: "Pi package source must be a non-empty string" });
     expect(serviceMocks.install).not.toHaveBeenCalled();

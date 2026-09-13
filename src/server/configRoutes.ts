@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import { effectiveOmpWebConfig, loadOmpWebConfig, parseUploadsConfig, saveOmpWebConfig, type LoadOptions } from "../config.js";
 import type { OmpWebConfigEnvOverrides, OmpWebConfigResponse, OmpWebConfigValues } from "../shared/apiTypes.js";
 import { isOmpWebPluginId } from "../shared/pluginIds.js";
@@ -45,42 +45,44 @@ export function currentOmpWebConfigResponse(options: LoadOptions = {}): OmpWebCo
   };
 }
 
-export function registerConfigRoutes(app: FastifyInstance, service: OmpWebConfigService = createFileOmpWebConfigService()): void {
-  app.get("/api/config", async (_request, reply) => {
+export function registerConfigRoutes(app: Hono, service: OmpWebConfigService = createFileOmpWebConfigService()): void {
+  app.get("/api/config", async (c) => {
     try {
-      return await service.read();
+      return c.json(await service.read());
     } catch (error) {
-      return reply.code(500).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 500);
     }
   });
 
-  app.put<{ Body: { config?: unknown } | undefined }>("/api/config", async (request, reply) => {
+  app.put("/api/config", async (c) => {
     try {
-      return await service.write(parseConfigRequest(request.body?.config));
+      const body = await c.req.json<{ config?: unknown }>().catch(() => undefined);
+      return c.json(await service.write(parseConfigRequest(body?.config)));
     } catch (error) {
       const status = isConfigValidationError(error) ? 400 : 500;
-      return reply.code(status).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, status);
     }
   });
 }
 
-export function registerLocalMachineConfigRoutes(app: FastifyInstance, service: OmpWebConfigService = createFileOmpWebConfigService()): void {
-  app.get("/api/machines/local/config", async (_request, reply) => {
+export function registerLocalMachineConfigRoutes(app: Hono, service: OmpWebConfigService = createFileOmpWebConfigService()): void {
+  app.get("/api/machines/local/config", async (c) => {
     try {
-      return selectedMachineConfigResponse(await service.read());
+      return c.json(selectedMachineConfigResponse(await service.read()));
     } catch (error) {
-      return reply.code(500).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 500);
     }
   });
 
-  app.put<{ Body: { config?: unknown } | undefined }>("/api/machines/local/config", async (request, reply) => {
+  app.put("/api/machines/local/config", async (c) => {
     try {
+      const body = await c.req.json<{ config?: unknown }>().catch(() => undefined);
       const current = await service.read();
-      const patch = parseSelectedMachineConfigRequest(request.body?.config);
-      return selectedMachineConfigResponse(await service.write(mergeSelectedMachineConfig(current.config, patch)));
+      const patch = parseSelectedMachineConfigRequest(body?.config);
+      return c.json(selectedMachineConfigResponse(await service.write(mergeSelectedMachineConfig(current.config, patch))));
     } catch (error) {
       const status = isConfigValidationError(error) ? 400 : 500;
-      return reply.code(status).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, status);
     }
   });
 }

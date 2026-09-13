@@ -1,9 +1,9 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import { HonoTestApp } from "./testUtils.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { registerConfigRoutes, registerLocalMachineConfigRoutes, type OmpWebConfigService } from "./configRoutes.js";
 import type { OmpWebConfigResponse, OmpWebConfigValues } from "../shared/apiTypes.js";
 
-let app: FastifyInstance;
+let app: HonoTestApp;
 let savedConfig: OmpWebConfigValues;
 let service: OmpWebConfigService;
 
@@ -16,9 +16,9 @@ beforeEach(async () => {
       return responseFor(savedConfig, true);
     }),
   };
-  app = Fastify({ logger: false });
-  registerConfigRoutes(app, service);
-  registerLocalMachineConfigRoutes(app, service);
+  app = new HonoTestApp();
+  registerConfigRoutes(app.app, service);
+  registerLocalMachineConfigRoutes(app.app, service);
   await app.ready();
 });
 

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import type { TerminalCommandRun, Workspace } from "../../shared/apiTypes.js";
 import { workspaceDeletionMetadata } from "../../shared/workspaceDeletion.js";
 import { SessionDaemonClient } from "../../sessiond/sessionDaemonClient.js";
@@ -7,12 +7,14 @@ import type { SessionProxyDaemon } from "../sessiond/sessionProxyRoutes.js";
 import type { WorkspaceService } from "./workspaceService.js";
 import { isRecord } from "../utils.js";
 
-export function registerWorkspaceDeletionRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
-  app.delete<{ Params: { projectId: string; workspaceId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId`, async (request, reply) => {
+export function registerWorkspaceDeletionRoutes(app: Hono, projects: ProjectService, workspaces: WorkspaceService, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
+  app.delete(`${prefix}/projects/:projectId/workspaces/:workspaceId`, async (c) => {
     try {
-      return await deleteWorkspace(projects, workspaces, daemon, request.params.projectId, request.params.workspaceId);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      return c.json(await deleteWorkspace(projects, workspaces, daemon, projectId, workspaceId));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 }
@@ -111,6 +113,5 @@ function optionalNumber(record: Record<string, unknown>, field: string): number 
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
+  return `'${value.replace(/'/gu, "'\\''")}'`;
 }
-

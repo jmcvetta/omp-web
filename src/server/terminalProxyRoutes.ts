@@ -1,118 +1,156 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { Hono } from "hono";
+import type { UpgradeWebSocket } from "hono/ws";
+import type { WebSocket } from "ws";
 import type { ProjectService } from "./projects/projectService.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { resolveWorkspaceContext } from "./workspaces/workspaceContext.js";
 import type { WorkspaceService } from "./workspaces/workspaceService.js";
 import { terminalSizeQuery } from "./terminals/terminalSize.js";
-import { bridgeSockets } from "./webSocketBridge.js";
+import { bridgeHonoSocketToUpstream } from "./webSocketBridge.js";
 
-export function registerTerminalProxyRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
-  app.get<{ Params: { projectId: string; workspaceId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (request, reply) => {
+export function registerTerminalProxyRoutes(
+  app: Hono,
+  projects: ProjectService,
+  workspaces: WorkspaceService,
+  daemon: SessionProxyDaemon = new SessionDaemonClient(),
+  prefix = "/api",
+  upgradeWebSocket?: UpgradeWebSocket,
+): void {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await proxyJson(daemon, "GET", `/terminals?cwd=${encodeURIComponent(context.root)}`, undefined, reply);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return await proxyJson(daemon, "GET", `/terminals?cwd=${encodeURIComponent(context.root)}`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.delete<{ Params: { projectId: string; workspaceId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (request, reply) => {
+  app.delete(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await proxyJson(daemon, "DELETE", `/terminals?cwd=${encodeURIComponent(context.root)}`, undefined, reply);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return await proxyJson(daemon, "DELETE", `/terminals?cwd=${encodeURIComponent(context.root)}`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.post<{ Params: { projectId: string; workspaceId: string }; Body: { name?: string; cols?: number; rows?: number } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (request, reply) => {
+  app.post(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await proxyJson(daemon, "POST", "/terminals", { ...request.body, cwd: context.root }, reply);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const body = await c.req.json<{ name?: string; cols?: number; rows?: number }>().catch(() => ({}));
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return await proxyJson(daemon, "POST", "/terminals", { ...body, cwd: context.root });
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.post<{ Params: { projectId: string; workspaceId: string; terminalId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId/continue`, async (request, reply) => {
+  app.post(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId/continue`, async (c) => {
     try {
-      await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await proxyJson(daemon, "POST", `/terminals/${encodeURIComponent(request.params.terminalId)}/continue`, undefined, reply);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const terminalId = c.req.param("terminalId") ?? "";
+      await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return await proxyJson(daemon, "POST", `/terminals/${encodeURIComponent(terminalId)}/continue`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.delete<{ Params: { projectId: string; workspaceId: string; terminalId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId`, async (request, reply) => {
+  app.delete(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId`, async (c) => {
     try {
-      await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await proxyJson(daemon, "DELETE", `/terminals/${encodeURIComponent(request.params.terminalId)}`, undefined, reply);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const terminalId = c.req.param("terminalId") ?? "";
+      await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return await proxyJson(daemon, "DELETE", `/terminals/${encodeURIComponent(terminalId)}`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.post<{ Params: { projectId: string; workspaceId: string }; Body: TerminalCommandRunRequest }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminal-command-runs`, async (request, reply) => {
+  app.post(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminal-command-runs`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const body = await c.req.json<TerminalCommandRunRequest>();
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
       return await proxyJson(daemon, "POST", "/terminal-command-runs", {
-        origin: request.body.origin,
-        projectId: request.params.projectId,
-        workspaceId: request.params.workspaceId,
+        origin: body.origin,
+        projectId,
+        workspaceId,
         cwd: context.root,
-        title: request.body.title,
-        command: request.body.command,
-        metadata: request.body.metadata ?? {},
-      }, reply);
+        title: body.title,
+        command: body.command,
+        metadata: body.metadata ?? {},
+      });
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.get<{ Querystring: TerminalCommandRunQuery }>(`${prefix}/terminal-command-runs`, async (request, reply) => {
+  app.get(`${prefix}/terminal-command-runs`, async (c) => {
     try {
-      return await proxyJson(daemon, "GET", `/terminal-command-runs${terminalCommandRunQuery(request.query)}`, undefined, reply);
+      return await proxyJson(daemon, "GET", `/terminal-command-runs${terminalCommandRunQuery(c.req.query())}`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.post<{ Params: { runId: string } }>(`${prefix}/terminal-command-runs/:runId/cancel`, async (request, reply) => {
+  app.post(`${prefix}/terminal-command-runs/:runId/cancel`, async (c) => {
     try {
-      return await proxyJson(daemon, "POST", `/terminal-command-runs/${encodeURIComponent(request.params.runId)}/cancel`, undefined, reply);
+      const runId = c.req.param("runId") ?? "";
+      return await proxyJson(daemon, "POST", `/terminal-command-runs/${encodeURIComponent(runId)}/cancel`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.get<{ Params: { runId: string } }>(`${prefix}/terminal-command-runs/:runId`, async (request, reply) => {
+  app.get(`${prefix}/terminal-command-runs/:runId`, async (c) => {
     try {
-      return await proxyJson(daemon, "GET", `/terminal-command-runs/${encodeURIComponent(request.params.runId)}`, undefined, reply);
+      const runId = c.req.param("runId") ?? "";
+      return await proxyJson(daemon, "GET", `/terminal-command-runs/${encodeURIComponent(runId)}`, undefined);
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return requestFailed(error);
     }
   });
 
-  app.get<{ Params: { projectId: string; workspaceId: string; terminalId: string }; Querystring: { cols?: string; rows?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId/socket`, { websocket: true }, async (socket, request) => {
-    try {
-      await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const sizeQuery = terminalSizeQuery(request.query.cols, request.query.rows);
-      bridgeSockets(socket, daemon.connectWebSocket(`/terminals/${request.params.terminalId}/socket${sizeQuery}`));
-    } catch (error) {
-      socket.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-      socket.close();
-    }
-  });
+  if (upgradeWebSocket !== undefined) {
+    app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/terminals/:terminalId/socket`, upgradeWebSocket((c) => {
+      const projectId = c.req.param("projectId") ?? "";
+      const workspaceId = c.req.param("workspaceId") ?? "";
+      const terminalId = c.req.param("terminalId") ?? "";
+      const cols = c.req.query("cols");
+      const rows = c.req.query("rows");
+      let upstream: WebSocket | undefined;
+
+      return {
+        async onOpen(_evt, ws) {
+          try {
+            await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+            const sizeQuery = terminalSizeQuery(cols, rows);
+            upstream = daemon.connectWebSocket(`/terminals/${terminalId}/socket${sizeQuery}`);
+            bridgeHonoSocketToUpstream(ws, upstream);
+          } catch (error) {
+            ws.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+            ws.close();
+          }
+        },
+        onClose() {
+          upstream?.close();
+        },
+        onError() {
+          upstream?.close();
+        },
+      };
+    }));
+  }
 }
 
 interface TerminalCommandRunRequest {
@@ -141,16 +179,16 @@ function terminalCommandRunQuery(filter: TerminalCommandRunQuery): string {
   return query === "" ? "" : `?${query}`;
 }
 
-async function proxyJson(daemon: SessionProxyDaemon, method: string, path: string, body: unknown, reply: FastifyReply): Promise<unknown> {
+async function proxyJson(daemon: SessionProxyDaemon, method: string, path: string, body: unknown): Promise<Response> {
   const upstream = await daemon.request(method, path, body);
-  reply.code(upstream.statusCode);
+  const headers = new Headers();
   const contentType = upstream.headers["content-type"];
-  if (contentType !== undefined && contentType !== "") reply.header("content-type", contentType);
-  const value: unknown = upstream.body !== "" ? JSON.parse(upstream.body) : undefined;
-  return value;
+  if (contentType !== undefined && contentType !== "") {
+    headers.set("content-type", contentType);
+  }
+  return new Response(upstream.body, { status: upstream.statusCode, headers });
 }
 
-function requestFailed(reply: FastifyReply, error: unknown): void {
-  reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+function requestFailed(error: unknown): Response {
+  return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
 }
-

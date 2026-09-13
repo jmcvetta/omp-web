@@ -1,43 +1,97 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
-import { WebSocket, type RawData } from "ws";
+import type { Hono } from "hono";
+import type { UpgradeWebSocket } from "hono/ws";
+import type { WebSocket } from "ws";
 import { SessionDaemonClient } from "../../sessiond/sessionDaemonClient.js";
+import { bridgeHonoSocketToUpstream } from "../webSocketBridge.js";
 
 export type SessionProxyDaemon = Pick<SessionDaemonClient, "request" | "connectWebSocket">;
 
-export function registerSessionProxyRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
-  const proxy = async (request: { method: string; url: string; body?: unknown }, reply: FastifyReply) => {
+export function registerSessionProxyRoutes(
+  app: Hono,
+  daemon: SessionProxyDaemon = new SessionDaemonClient(),
+  prefix = "/api",
+  upgradeWebSocket?: UpgradeWebSocket,
+): void {
+  const proxy = async (c: { req: { method: string; url: string; raw: Request } }): Promise<Response> => {
     try {
-      const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body);
-      reply.code(upstream.statusCode);
+      const url = new URL(c.req.url);
+      const strippedPath = stripPrefix(url.pathname + url.search, prefix);
+      const method = c.req.method;
+      const body = method === "GET" || method === "HEAD" ? undefined : await c.req.raw.json().catch(() => undefined);
+      const upstream = await daemon.request(method, strippedPath, body);
+
+      const headers = new Headers();
       const contentType = upstream.headers["content-type"];
-      if (contentType !== undefined && contentType !== "") reply.header("content-type", contentType);
-      return upstream.body !== "" ? parseJson(upstream.body) : undefined;
+      if (contentType !== undefined && contentType !== "") {
+        headers.set("content-type", contentType);
+      }
+      return new Response(upstream.body, { status: upstream.statusCode, headers });
     } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
+      return Response.json({ error: `Session daemon unavailable: ${error instanceof Error ? error.message : String(error)}` }, { status: 502 });
     }
   };
 
-  app.get(`${prefix}/sessiond/health`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/health` }, reply));
-  app.get(`${prefix}/sessiond/runtime`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/runtime` }, reply));
+  app.get(`${prefix}/sessiond/health`, (c) => proxy({ req: { method: "GET", url: `${prefix}/health`, raw: c.req.raw } }));
+  app.get(`${prefix}/sessiond/runtime`, (c) => proxy({ req: { method: "GET", url: `${prefix}/runtime`, raw: c.req.raw } }));
 
-  app.get<{ Params: { sessionId: string } }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
-    bridgeSockets(socket, daemon.connectWebSocket(stripPrefix(request.url, prefix)));
-  });
+  if (upgradeWebSocket !== undefined) {
+    app.get(`${prefix}/sessions/:sessionId/events`, upgradeWebSocket((c) => {
+      const url = new URL(c.req.url);
+      const strippedPath = stripPrefix(url.pathname + url.search, prefix);
+      let upstream: WebSocket | undefined;
 
-  app.get(`${prefix}/sessions/events`, { websocket: true }, (socket) => {
-    bridgeSockets(socket, daemon.connectWebSocket("/sessions/events"));
-  });
+      return {
+        onOpen(_evt, ws) {
+          upstream = daemon.connectWebSocket(strippedPath);
+          bridgeHonoSocketToUpstream(ws, upstream);
+        },
+        onClose() {
+          upstream?.close();
+        },
+        onError() {
+          upstream?.close();
+        },
+      };
+    }));
 
-  app.get(`${prefix}/events`, { websocket: true }, (socket) => {
-    bridgeSockets(socket, daemon.connectWebSocket("/events"));
-  });
+    app.get(`${prefix}/sessions/events`, upgradeWebSocket(() => {
+      let upstream: WebSocket | undefined;
+      return {
+        onOpen(_evt, ws) {
+          upstream = daemon.connectWebSocket("/sessions/events");
+          bridgeHonoSocketToUpstream(ws, upstream);
+        },
+        onClose() {
+          upstream?.close();
+        },
+        onError() {
+          upstream?.close();
+        },
+      };
+    }));
 
-  app.all(`${prefix}/activity`, (request, reply) => proxy(request, reply));
-  app.all(`${prefix}/auth`, (request, reply) => proxy(request, reply));
-  app.all(`${prefix}/auth/*`, (request, reply) => proxy(request, reply));
-  app.all(`${prefix}/sessions`, (request, reply) => proxy(request, reply));
-  app.all(`${prefix}/sessions/*`, (request, reply) => proxy(request, reply));
+    app.get(`${prefix}/events`, upgradeWebSocket(() => {
+      let upstream: WebSocket | undefined;
+      return {
+        onOpen(_evt, ws) {
+          upstream = daemon.connectWebSocket("/events");
+          bridgeHonoSocketToUpstream(ws, upstream);
+        },
+        onClose() {
+          upstream?.close();
+        },
+        onError() {
+          upstream?.close();
+        },
+      };
+    }));
+  }
+
+  app.all(`${prefix}/activity`, (c) => proxy(c));
+  app.all(`${prefix}/auth`, (c) => proxy(c));
+  app.all(`${prefix}/auth/*`, (c) => proxy(c));
+  app.all(`${prefix}/sessions`, (c) => proxy(c));
+  app.all(`${prefix}/sessions/*`, (c) => proxy(c));
 }
 
 function stripPrefix(url: string, prefix: string): string {
@@ -45,28 +99,4 @@ function stripPrefix(url: string, prefix: string): string {
   const query = url.slice(path.length);
   const stripped = path.startsWith(prefix) ? `${path.slice(prefix.length)}${query}` : url;
   return stripped === "" ? "/" : stripped;
-}
-
-function parseJson(text: string): unknown {
-  const value: unknown = JSON.parse(text);
-  return value;
-}
-
-function requestFailed(reply: FastifyReply, error: unknown): void {
-  reply.code(502).send({ error: `Session daemon unavailable: ${error instanceof Error ? error.message : String(error)}` });
-}
-
-function bridgeSockets(client: WebSocket, upstream: WebSocket): void {
-  client.on("message", (data) => { sendIfOpen(upstream, data); });
-  upstream.on("message", (data) => { sendIfOpen(client, data); });
-  client.on("close", () => { upstream.close(); });
-  upstream.on("close", () => { client.close(); });
-  upstream.on("error", () => { client.close(); });
-  client.on("error", () => { upstream.close(); });
-}
-
-function sendIfOpen(socket: WebSocket, data: RawData): void {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(data);
-  }
 }

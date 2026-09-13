@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import type { WriteWorkspaceFileOptions } from "../shared/apiTypes.js";
 import type { OmpWebConfigService } from "./configRoutes.js";
 import type { ProjectService } from "./projects/projectService.js";
@@ -14,117 +14,145 @@ export interface WorkspaceExplorerRouteOptions {
   config?: Pick<OmpWebConfigService, "read">;
 }
 
-export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix = "/api", options: WorkspaceExplorerRouteOptions = {}): void {
-  registerWorkspaceFileContentParsers(app);
-
-  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/tree`, async (request, reply) => {
+export function registerWorkspaceExplorerRoutes(app: Hono, projects: ProjectService, workspaces: WorkspaceService, prefix = "/api", options: WorkspaceExplorerRouteOptions = {}): void {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/tree`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await listWorkspaceTree(context.root, request.query.path, await pathAccessForWorkspaceContext(context, options.config));
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return c.json(await listWorkspaceTree(context.root, path, await pathAccessForWorkspaceContext(context, options.config)));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (request, reply) => {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await readWorkspaceFile(context.root, request.query.path, await pathAccessForWorkspaceContext(context, options.config));
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return c.json(await readWorkspaceFile(context.root, path, await pathAccessForWorkspaceContext(context, options.config)));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.put<{ Params: { projectId: string; workspaceId: string }; Body: Buffer; Querystring: { path?: string; createDirs?: string; overwrite?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (request, reply) => {
+  app.put(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const createDirs = c.req.query("createDirs");
+      const overwrite = c.req.query("overwrite");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
       const writeOptions: WriteWorkspaceFileOptions = {
-        createDirs: request.query.createDirs !== "false",
-        overwrite: request.query.overwrite !== "false",
+        createDirs: createDirs !== "false",
+        overwrite: overwrite !== "false",
       };
-      return await writeWorkspaceFile(context.root, request.query.path, request.body, writeOptions);
+      const arrayBuffer = await c.req.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return c.json(await writeWorkspaceFile(context.root, path, buffer, writeOptions));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.delete<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (request, reply) => {
+  app.delete(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await deleteWorkspaceFile(context.root, request.query.path);
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return c.json(await deleteWorkspaceFile(context.root, path));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Params: { projectId: string; workspaceId: string }; Querystring: { fromPath?: string; toPath?: string; createDirs?: string; overwrite?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/move`, async (request, reply) => {
+  app.post(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/move`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      return await moveWorkspaceFile(context.root, request.query.fromPath, request.query.toPath, {
-        createDirs: request.query.createDirs !== "false",
-        overwrite: request.query.overwrite === "true",
-      });
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const fromPath = c.req.query("fromPath");
+      const toPath = c.req.query("toPath");
+      const createDirs = c.req.query("createDirs");
+      const overwrite = c.req.query("overwrite");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      return c.json(await moveWorkspaceFile(context.root, fromPath, toPath, {
+        createDirs: createDirs !== "false",
+        overwrite: overwrite === "true",
+      }));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  
-  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/raw`, async (request, reply) => {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/raw`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const file = await readWorkspaceFileRaw(context.root, request.query.path, await pathAccessForWorkspaceContext(context, options.config));
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      const file = await readWorkspaceFileRaw(context.root, path, await pathAccessForWorkspaceContext(context, options.config));
       const fallbackName = file.filename.replace(/[^\x20-\x7E]|["\\]/g, "_");
       const utf8Name = encodeURIComponent(file.filename);
-      return await reply
-        .type(file.mimeType)
-        .header("Cache-Control", "private, no-cache")
-        .header("Content-Length", String(file.size))
-        .header("Content-Disposition", `attachment; filename="${fallbackName}"; filename*=UTF-8''${utf8Name}`)
-        .header("Content-Security-Policy", "sandbox; default-src 'none'")
-        .header("Last-Modified", new Date(file.modifiedAt).toUTCString())
-        .header("X-Content-Type-Options", "nosniff")
-        .send(file.stream);
+
+      return new Response(file.stream as unknown as ReadableStream, {
+        headers: {
+          "Content-Type": file.mimeType,
+          "Cache-Control": "private, no-cache",
+          "Content-Length": String(file.size),
+          "Content-Disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${utf8Name}`,
+          "Content-Security-Policy": "sandbox; default-src 'none'",
+          "Last-Modified": new Date(file.modifiedAt).toUTCString(),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/preview`, async (request, reply) => {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/preview`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const preview = await readWorkspaceImagePreview(context.root, request.query.path, await pathAccessForWorkspaceContext(context, options.config));
-      return await reply
-        .type(preview.mimeType)
-        .header("Cache-Control", "private, max-age=3600")
-        .header("Content-Length", String(preview.size))
-        .header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'")
-        .header("Last-Modified", new Date(preview.modifiedAt).toUTCString())
-        .header("X-Content-Type-Options", "nosniff")
-        .send(preview.stream);
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const path = c.req.query("path");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      const preview = await readWorkspaceImagePreview(context.root, path, await pathAccessForWorkspaceContext(context, options.config));
+
+      return new Response(preview.stream as unknown as ReadableStream, {
+        headers: {
+          "Content-Type": preview.mimeType,
+          "Cache-Control": "private, max-age=3600",
+          "Content-Length": String(preview.size),
+          "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'",
+          "Last-Modified": new Date(preview.modifiedAt).toUTCString(),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { q?: string; kind?: "tracked" | "untracked" | "other"; mode?: "file" | "path"; scope?: "tracked" | "all" } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/files`, async (request, reply) => {
+  app.get(`${prefix}/projects/:projectId/workspaces/:workspaceId/files`, async (c) => {
     try {
-      const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const query = request.query.q ?? "";
+      const projectId = c.req.param("projectId");
+      const workspaceId = c.req.param("workspaceId");
+      const context = await resolveWorkspaceContext(projects, workspaces, projectId, workspaceId);
+      const query = c.req.query("q") ?? "";
+      const kind = c.req.query("kind") as "tracked" | "untracked" | "other" | undefined;
+      const mode = c.req.query("mode") as "file" | "path" | undefined;
+      const scope = c.req.query("scope") as "tracked" | "all" | undefined;
+
       const pathAccess = isAbsoluteishFileSuggestionQuery(query) ? await pathAccessForWorkspaceContext(context, options.config) : undefined;
-      if (request.query.mode === "path") return await listPathSuggestions(context.root, query, pathAccess);
-      return await listFileSuggestions(context.root, query, { kind: request.query.kind, scope: request.query.scope, pathAccess });
+      if (mode === "path") return c.json(await listPathSuggestions(context.root, query, pathAccess));
+      return c.json(await listFileSuggestions(context.root, query, { kind, scope, pathAccess }));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
-}
-
-function registerWorkspaceFileContentParsers(app: FastifyInstance): void {
-  // Fastify's default parser only handles JSON; workspace file writes need to
-  // accept text and arbitrary binary payloads. This route module is registered
-  // for both local aliases, so parser registration must tolerate repeats.
-  try { app.addContentTypeParser("text/plain", { parseAs: "string" }, (_request, body, done) => { done(null, Buffer.from(body)); }); } catch { /* already registered */ }
-  try { app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => { done(null, body); }); } catch { /* already registered */ }
-  try { app.addContentTypeParser(/^([a-z]+\/[a-z0-9.+-]+)$/u, { parseAs: "buffer" }, (_request, body, done) => { done(null, body); }); } catch { /* already registered */ }
 }
