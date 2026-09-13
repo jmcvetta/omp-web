@@ -1,4 +1,4 @@
-import { api as defaultApi, type AskDialogResult, type CommandResult, type PromptAttachment, type QueuedSessionMessage, type SessionActivity, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionInfo, type SessionRef, type SessionStatus, type Workspace } from "../api";
+import { api as defaultApi, type AskDialogResult, type CommandResult, type PromptAttachment, type SessionActivity, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionInfo, type SessionRef, type SessionStatus } from "../api";
 import type { AppState } from "../appState";
 import { errorMessage } from "../utils.js";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
@@ -37,30 +37,6 @@ interface BulkSessionMutationResult {
   generatedAt?: string;
 }
 
-type ClientPendingStartSessionInfo = SessionInfo & { clientPendingStart: true; machineId: string };
-
-type QueuedPendingSessionSendInput =
-  | { type: "prompt"; text: string; streamingBehavior?: "steer" | "followUp" | undefined; attachments?: PromptAttachment[] | undefined; delivery: PromptAttachmentDelivery }
-  | { type: "shell"; text: string }
-  | { type: "command"; text: string };
-
-type QueuedPendingSessionSend = QueuedPendingSessionSendInput & { id: string };
-
-interface PendingSessionStart {
-  tempId: string;
-  workspaceId: string;
-  cwd: string;
-  machineId: string;
-  session: ClientPendingStartSessionInfo;
-  queuedSends: QueuedPendingSessionSend[];
-  discarded: boolean;
-}
-
-interface SuppressedCreatedSession {
-  session: SessionInfo;
-  machineId: string;
-}
-
 export class SessionController {
   private readonly socket: SessionEventSocket;
   private readonly api: typeof defaultApi;
@@ -71,10 +47,6 @@ export class SessionController {
   private pendingStatusBySession = new Map<string, SessionStatus>();
   private pendingActivityBySession = new Map<string, SessionActivity>();
   private pendingFrame: number | undefined;
-  private pendingSessionStartSeq = 0;
-  private pendingQueuedSendSeq = 0;
-  private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
-  private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
 
   constructor(
     private readonly getState: GetState,
@@ -130,14 +102,23 @@ export class SessionController {
     const workspace = this.getState().selectedWorkspace;
     if (!workspace) return;
     const machineId = selectedMachineId(this.getState());
-    const pending = this.createPendingSessionStart(workspace, machineId);
-    this.pendingSessionStarts.set(pending.tempId, pending);
-    this.insertAndSelectPendingSession(pending.session);
+    this.setState({ startingSessionCount: this.getState().startingSessionCount + 1, error: "" });
     try {
       const session = await this.api.startSession(workspace.path, machineId);
-      await this.resolvePendingSessionStart(pending.tempId, session);
+      rememberCachedNewSession(session, machineId);
+      const cached = markCachedNewSessionInfo(session, machineId);
+      const state = this.getState();
+      const sessions = [cached, ...state.sessions.filter((s) => s.id !== cached.id)];
+      this.setState({
+        sessions,
+        startingSessionCount: Math.max(0, this.getState().startingSessionCount - 1),
+      });
+      await this.selectSession(cached);
     } catch (error) {
-      this.failPendingSessionStart(pending.tempId, error);
+      this.setState({
+        startingSessionCount: Math.max(0, this.getState().startingSessionCount - 1),
+        error: `Failed to start session: ${errorMessage(error)}`,
+      });
     }
   }
 
@@ -146,10 +127,6 @@ export class SessionController {
   }
 
   async selectSession(session: SessionInfo, options?: { updateUrl?: boolean | undefined }) {
-    if (isClientPendingStartSessionInfo(session)) {
-      this.selectClientPendingStartSession(session, options);
-      return;
-    }
     this.sessionSelection.rememberSession({ ...session, cwd: this.workspaceSelectionKey(session.cwd) });
     const seq = ++this.selectionSeq;
     this.socket.close();
@@ -223,12 +200,6 @@ export class SessionController {
 
     const trimmed = text.trim();
     const hasAttachments = attachments !== undefined && attachments.length > 0;
-    if (isClientPendingStartSessionInfo(session)) {
-      if (!hasAttachments && trimmed.startsWith("/")) this.enqueuePendingSessionSend(session, { type: "command", text });
-      else if (!hasAttachments && isShellInput(text)) this.enqueuePendingSessionSend(session, { type: "shell", text });
-      else this.enqueuePendingSessionSend(session, { type: "prompt", text, streamingBehavior, attachments, delivery });
-      return;
-    }
     if (!hasAttachments && trimmed.startsWith("/")) return this.runCommand(text);
     if (!hasAttachments && isShellInput(text)) return this.runShell(text);
 
@@ -250,20 +221,12 @@ export class SessionController {
   async runShell(text: string) {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
-    if (isClientPendingStartSessionInfo(session)) {
-      this.enqueuePendingSessionSend(session, { type: "shell", text });
-      return;
-    }
     await this.deliverShellToSession(session, text, selectedMachineId(this.getState()), { optimisticLine: true });
   }
 
   async runCommand(text: string) {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return;
-    if (isClientPendingStartSessionInfo(session)) {
-      this.enqueuePendingSessionSend(session, { type: "command", text });
-      return;
-    }
     await this.deliverCommandToSession(session, text, selectedMachineId(this.getState()), { applyResult: true });
   }
 
@@ -321,39 +284,6 @@ export class SessionController {
 
   async branchBtw(): Promise<void> {
     await this.runCommand("/btw branch");
-  }
-
-  private enqueuePendingSessionSend(session: ClientPendingStartSessionInfo, input: QueuedPendingSessionSendInput): void {
-    const pending = this.pendingSessionStarts.get(session.id);
-    if (pending === undefined || pending.discarded) {
-      this.setState({ error: "The backend session is not ready for queued sends. Copy your message before discarding this failed start." });
-      return;
-    }
-    const queued: QueuedPendingSessionSend = { ...input, id: `pending-send-${String(++this.pendingQueuedSendSeq)}` };
-    pending.queuedSends.push(queued);
-    const state = this.getState();
-    const current = state.clientQueuedSessionMessages[session.id] ?? [];
-    const activity = creatingPendingSessionActivity(session.id, pending.queuedSends.length);
-    this.setState({
-      clientQueuedSessionMessages: { ...state.clientQueuedSessionMessages, [session.id]: [...current, queuedSessionMessagePreview(queued)] },
-      sessionActivities: { ...state.sessionActivities, [session.id]: activity },
-      activity: state.selectedSession?.id === session.id ? activity : state.activity,
-      error: "",
-    });
-  }
-
-  private async flushQueuedPendingSends(session: SessionInfo, machineId: string, queuedSends: readonly QueuedPendingSessionSend[]): Promise<void> {
-    for (const queued of queuedSends) {
-      const delivered = await this.deliverQueuedPendingSend(session, machineId, queued);
-      if (!delivered) return;
-      this.dropNextQueuedSessionMessage(session.id);
-    }
-  }
-
-  private async deliverQueuedPendingSend(session: SessionInfo, machineId: string, queued: QueuedPendingSessionSend): Promise<boolean> {
-    if (queued.type === "prompt") return this.deliverPromptToSession(session, queued.text, queued.streamingBehavior, queued.attachments, queued.delivery, machineId, { markSending: true });
-    if (queued.type === "shell") return this.deliverShellToSession(session, queued.text, machineId, { optimisticLine: true });
-    return this.deliverCommandToSession(session, queued.text, machineId, { applyResult: true });
   }
 
   private async deliverPromptToSession(session: SessionInfo, text: string, streamingBehavior: "steer" | "followUp" | undefined, attachments: PromptAttachment[] | undefined, delivery: PromptAttachmentDelivery, machineId: string, options: { markSending: boolean }): Promise<boolean> {
@@ -595,10 +525,9 @@ export class SessionController {
     const workspace = this.getState().selectedWorkspace;
     if (workspace === undefined) return;
     try {
-      const listedSessions = mergeCachedNewSessions(workspace.path, await this.api.sessions(workspace.path, machineId), machineId)
-        .filter((session) => !this.isSuppressedCreatedSession(session, machineId));
+      const listedSessions = mergeCachedNewSessions(workspace.path, await this.api.sessions(workspace.path, machineId), machineId);
       if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedWorkspace?.id !== workspace.id) return;
-      const sessions = this.mergePendingStartSessions(workspace.path, listedSessions, machineId);
+      const sessions = listedSessions;
       const selectedSession = this.getState().selectedSession;
       this.setState({ sessions });
       if (selectedSession === undefined) return;
@@ -617,16 +546,9 @@ export class SessionController {
 
   async deleteCachedNewSession(session = this.getState().selectedSession) {
     if (session === undefined || !isTransientNewSessionInfo(session, this.statusForSession(session))) return;
-    const pendingStart = isClientPendingStartSessionInfo(session) ? this.pendingSessionStarts.get(session.id) : undefined;
-    if (pendingStart !== undefined) {
-      pendingStart.discarded = true;
-      pendingStart.queuedSends = [];
-    }
-    else {
-      void this.api.stop(session, selectedMachineId(this.getState())).catch(() => {
-        // Best-effort cleanup for transient sessions that may not exist server-side anymore.
-      });
-    }
+    void this.api.stop(session, selectedMachineId(this.getState())).catch(() => {
+      // Best-effort cleanup for transient sessions that may not exist server-side anymore.
+    });
     forgetCachedNewSession(session.id, selectedMachineId(this.getState()));
     clearDraft(this.sessionCacheKey(session.id));
     const state = this.getState();
@@ -780,7 +702,7 @@ export class SessionController {
 
   async refreshSelectedSession(sessionId = this.getState().selectedSession?.id): Promise<void> {
     const session = this.getState().selectedSession;
-    if (sessionId === undefined || session?.id !== sessionId || session.archived === true || isClientPendingStartSessionInfo(session)) return;
+    if (sessionId === undefined || session?.id !== sessionId || session.archived === true) return;
     try {
       this.flushPendingUpdates();
       const [page, status] = await Promise.all([this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState())), this.api.status(session, selectedMachineId(this.getState()))]);
@@ -824,169 +746,6 @@ export class SessionController {
       sessions: this.getState().sessions.map((candidate) => candidate.id === session.id ? session : candidate),
       selectedSession: current?.id === session.id ? session : current,
     });
-  }
-
-  private createPendingSessionStart(workspace: Workspace, machineId: string): PendingSessionStart {
-    const tempId = `pending-session-${String(++this.pendingSessionStartSeq)}-${Date.now().toString(36)}`;
-    const now = new Date().toISOString();
-    const session: ClientPendingStartSessionInfo = {
-      id: tempId,
-      path: `omp-web://pending-session/${tempId}`,
-      cwd: workspace.path,
-      persisted: false,
-      name: "New session",
-      created: now,
-      modified: now,
-      messageCount: 0,
-      firstMessage: "",
-      clientPendingStart: true,
-      machineId,
-    };
-    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false };
-  }
-
-  private insertAndSelectPendingSession(session: ClientPendingStartSessionInfo): void {
-    const state = this.getState();
-    this.selectClientPendingStartSession(session, {
-      activity: creatingPendingSessionActivity(session.id),
-      sessions: [session, ...state.sessions.filter((candidate) => candidate.id !== session.id)],
-    });
-  }
-
-  private selectClientPendingStartSession(session: ClientPendingStartSessionInfo, options?: { updateUrl?: boolean | undefined; activity?: SessionActivity | undefined; sessions?: SessionInfo[] | undefined }): void {
-    this.sessionSelection.rememberSession({ ...session, cwd: this.workspaceSelectionKey(session.cwd) });
-    this.selectionSeq += 1;
-    this.socket.close();
-    this.catchupStreamSessionId = undefined;
-    this.clearPendingUpdates();
-    const state = this.getState();
-    const pendingStart = this.pendingSessionStarts.get(session.id);
-    const activity = options?.activity ?? state.sessionActivities[session.id] ?? (pendingStart !== undefined ? creatingPendingSessionActivity(session.id, pendingStart.queuedSends.length) : undefined);
-    this.setState({
-      ...(options?.sessions === undefined ? {} : { sessions: options.sessions }),
-      selectedSession: session,
-      messages: [],
-      messagePageStart: 0,
-      messagePageEnd: 0,
-      messagePageTotal: 0,
-      isLoadingEarlierMessages: false,
-      isReceivingPartialStream: false,
-      status: undefined,
-      activity,
-      availableThinkingLevels: [],
-      ...(activity === undefined ? {} : { sessionActivities: { ...state.sessionActivities, [session.id]: activity } }),
-      error: "",
-    });
-    if (options?.updateUrl !== false) this.updateUrl();
-  }
-
-  private async resolvePendingSessionStart(tempId: string, session: SessionInfo): Promise<void> {
-    const pending = this.pendingSessionStarts.get(tempId);
-    if (pending === undefined) return;
-    this.pendingSessionStarts.delete(tempId);
-    const queuedSends = pending.queuedSends.splice(0);
-    const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
-    if (pending.discarded) {
-      clearDraft(machineSessionKey(pending.machineId, tempId));
-      this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
-      this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
-      void this.api.stop(session, pending.machineId).catch(() => {
-        // Best-effort cleanup for a backend session whose temporary UI row was discarded before creation finished.
-      });
-      return;
-    }
-
-    rememberCachedNewSession(session, pending.machineId);
-    moveDraft(machineSessionKey(pending.machineId, tempId), machineSessionKey(pending.machineId, session.id));
-    const cachedSession = markCachedNewSessionInfo(session, pending.machineId);
-    if (!this.isCurrentPendingStart(pending)) {
-      this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
-      await this.flushQueuedPendingSends(cachedSession, pending.machineId, queuedSends);
-      return;
-    }
-
-    const state = this.getState();
-    const wasSelected = state.selectedSession?.id === tempId;
-    this.setState({
-      sessions: replacePendingSessionInList(state.sessions, tempId, cachedSession),
-      sessionActivities: omitSessionActivity(state.sessionActivities, tempId),
-      sendingPrompts: moveRecordKey(state.sendingPrompts, tempId, cachedSession.id),
-      clientQueuedSessionMessages: moveRecordKey(state.clientQueuedSessionMessages, tempId, cachedSession.id),
-      ...(wasSelected ? { selectedSession: cachedSession, status: state.sessionStatuses[cachedSession.id], activity: state.sessionActivities[cachedSession.id] } : {}),
-      error: "",
-    });
-    this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
-    if (wasSelected) {
-      this.updateUrl({ replace: true });
-      await this.selectSession(cachedSession, { updateUrl: false });
-    }
-    await this.flushQueuedPendingSends(cachedSession, pending.machineId, queuedSends);
-  }
-
-  private failPendingSessionStart(tempId: string, error: unknown): void {
-    const pending = this.pendingSessionStarts.get(tempId);
-    if (pending === undefined) return;
-    this.pendingSessionStarts.delete(tempId);
-    const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId);
-    const isCurrentPendingStart = this.isCurrentPendingStart(pending);
-    if (pending.discarded || !isCurrentPendingStart) {
-      if (isCurrentPendingStart) this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
-      return;
-    }
-    const state = this.getState();
-    const message = errorMessage(error);
-    const activity = failedPendingSessionActivity(tempId, message, pending.queuedSends.length);
-    const hasPendingRow = state.sessions.some((session) => session.id === tempId);
-    this.setState({
-      sessions: hasPendingRow ? state.sessions : [pending.session, ...state.sessions],
-      sessionActivities: { ...state.sessionActivities, [tempId]: activity },
-      activity: state.selectedSession?.id === tempId ? activity : state.activity,
-      error: `Failed to start session: ${message}`,
-    });
-    this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
-  }
-
-  private isCurrentPendingStart(pending: PendingSessionStart): boolean {
-    const state = this.getState();
-    return selectedMachineId(state) === pending.machineId && state.selectedWorkspace?.id === pending.workspaceId;
-  }
-
-  private hasPendingStartFor(cwd: string, machineId: string): boolean {
-    return Array.from(this.pendingSessionStarts.values()).some((pending) => pending.cwd === cwd && pending.machineId === machineId);
-  }
-
-  private isSuppressedCreatedSession(session: SessionInfo, machineId: string): boolean {
-    const suppressed = this.suppressedCreatedSessions.get(session.id);
-    return suppressed?.session.cwd === session.cwd && suppressed.machineId === machineId;
-  }
-
-  private takeSuppressedCreatedSessionsFor(cwd: string, machineId: string, resolvedSessionId?: string): SessionInfo[] {
-    if (resolvedSessionId !== undefined) this.suppressedCreatedSessions.delete(resolvedSessionId);
-    if (this.hasPendingStartFor(cwd, machineId)) return [];
-    const released: SessionInfo[] = [];
-    for (const [sessionId, suppressed] of this.suppressedCreatedSessions) {
-      if (suppressed.session.cwd !== cwd || suppressed.machineId !== machineId) continue;
-      this.suppressedCreatedSessions.delete(sessionId);
-      released.push(suppressed.session);
-    }
-    return released;
-  }
-
-  private applyReleasedCreatedSessions(sessions: readonly SessionInfo[], machineId: string): void {
-    if (sessions.length === 0 || selectedMachineId(this.getState()) !== machineId) return;
-    const state = this.getState();
-    if (state.selectedWorkspace === undefined) return;
-    const existingIds = new Set(state.sessions.map((session) => session.id));
-    const released = sessions.filter((session) => session.cwd === state.selectedWorkspace?.path && !existingIds.has(session.id));
-    if (released.length === 0) return;
-    this.setState({ sessions: [...released.reverse(), ...state.sessions] });
-  }
-
-  private mergePendingStartSessions(cwd: string, sessions: SessionInfo[], machineId: string): SessionInfo[] {
-    const pending = this.getState().sessions.filter((session): session is ClientPendingStartSessionInfo => isClientPendingStartSessionInfo(session) && session.cwd === cwd && session.machineId === machineId);
-    if (pending.length === 0) return sessions;
-    const pendingIds = new Set(pending.map((session) => session.id));
-    return [...pending, ...sessions.filter((session) => !pendingIds.has(session.id))];
   }
 
   private async recreateCachedNewSession(session: SessionInfo, options?: { updateUrl?: boolean | undefined }): Promise<void> {
@@ -1034,11 +793,6 @@ export class SessionController {
     // the optimistic insert from startSession in this same tab).
     if (state.selectedWorkspace?.path !== session.cwd) return;
     if (state.sessions.some((candidate) => candidate.id === session.id)) return;
-    const machineId = selectedMachineId(state);
-    if (this.hasPendingStartFor(session.cwd, machineId)) {
-      this.suppressedCreatedSessions.set(session.id, { session, machineId });
-      return;
-    }
     this.setState({ sessions: [session, ...state.sessions] });
   }
 
@@ -1265,81 +1019,6 @@ function omitKeys<T>(record: Record<string, T>, keys: readonly string[]): Record
   if (keys.length === 0) return record;
   const removed = new Set(keys);
   return Object.fromEntries(Object.entries(record).filter(([id]) => !removed.has(id)));
-}
-
-function moveRecordKey<T>(record: Record<string, T>, fromKey: string, toKey: string): Record<string, T> {
-  if (fromKey === toKey || !(fromKey in record)) return record;
-  const value = record[fromKey];
-  if (value === undefined) return record;
-  return { ...omitKey(record, fromKey), [toKey]: value };
-}
-
-function replacePendingSessionInList(sessions: readonly SessionInfo[], pendingSessionId: string, resolvedSession: SessionInfo): SessionInfo[] {
-  const next: SessionInfo[] = [];
-  let inserted = false;
-  for (const session of sessions) {
-    if (session.id === pendingSessionId) {
-      if (!inserted) {
-        next.push(resolvedSession);
-        inserted = true;
-      }
-      continue;
-    }
-    if (session.id === resolvedSession.id) continue;
-    next.push(session);
-  }
-  if (!inserted) return [resolvedSession, ...next];
-  return next;
-}
-
-function isClientPendingStartSessionInfo(session: SessionInfo | undefined): session is ClientPendingStartSessionInfo {
-  return session !== undefined && "clientPendingStart" in session && session.clientPendingStart === true;
-}
-
-function creatingPendingSessionActivity(sessionId: string, queuedCount = 0): SessionActivity {
-  return {
-    sessionId,
-    phase: "active",
-    label: "Creating session",
-    detail: queuedCount > 0 ? `${String(queuedCount)} queued ${queuedCount === 1 ? "message" : "messages"} will send when the backend session is ready` : "Waiting for the backend session to be ready",
-    at: new Date().toISOString(),
-  };
-}
-
-function failedPendingSessionActivity(sessionId: string, message: string, queuedCount = 0): SessionActivity {
-  const queuedDetail = queuedCount > 0 ? ` · ${String(queuedCount)} queued ${queuedCount === 1 ? "message" : "messages"} kept below` : "";
-  return {
-    sessionId,
-    phase: "error",
-    label: "Session creation failed",
-    detail: `${message}${queuedDetail}`,
-    at: new Date().toISOString(),
-  };
-}
-
-function queuedSessionMessagePreview(queued: QueuedPendingSessionSend): QueuedSessionMessage {
-  if (queued.type === "prompt") {
-    return { kind: queued.streamingBehavior === "steer" ? "steer" : "followUp", text: queuedPromptPreviewText(queued.text, queued.attachments) };
-  }
-  return { kind: "followUp", text: queued.text };
-}
-
-function queuedPromptPreviewText(text: string, attachments: PromptAttachment[] | undefined): string {
-  const attachmentText = queuedAttachmentSummary(attachments);
-  if (attachmentText === undefined) return text;
-  const trimmed = text.trim();
-  return trimmed === "" ? attachmentText : `${text}\n\n${attachmentText}`;
-}
-
-function queuedAttachmentSummary(attachments: PromptAttachment[] | undefined): string | undefined {
-  if (attachments === undefined || attachments.length === 0) return undefined;
-  const names = attachments.map((attachment) => attachment.name?.trim()).filter((name): name is string => name !== undefined && name !== "");
-  const count = attachments.length;
-  const label = `${String(count)} ${count === 1 ? "attachment" : "attachments"}`;
-  if (names.length === 0) return `[${label} queued]`;
-  const shownNames = names.slice(0, 3).join(", ");
-  const suffix = names.length > 3 ? `, +${String(names.length - 3)} more` : "";
-  return `[${label} queued: ${shownNames}${suffix}]`;
 }
 
 function uniqueSessionsById(sessions: readonly SessionInfo[]): SessionInfo[] {

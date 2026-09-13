@@ -1,7 +1,7 @@
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
-import { syntaxHighlighting, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
+import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
@@ -10,7 +10,6 @@ import { html as htmlLang } from "@codemirror/lang-html";
 import { python } from "@codemirror/lang-python";
 import { rust } from "@codemirror/lang-rust";
 import { go } from "@codemirror/lang-go";
-import { diff } from "@codemirror/legacy-modes/mode/diff";
 import { LitElement, css, html } from "lit";
 import { customElement, property, query } from "lit/decorators.js";
 
@@ -123,7 +122,6 @@ function languageExtensions(language: string | undefined): Extension[] {
     case "python": return [python()];
     case "rust": return [rust()];
     case "go": return [go()];
-    case "diff": return [StreamLanguage.define(diff)];
     default: return [];
   }
 }

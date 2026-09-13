@@ -100,7 +100,6 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
-          if (id.includes("@codemirror/legacy-modes")) return "vendor-editor-legacy";
           if (id.includes("@lezer/common") || id.includes("@lezer/highlight") || id.includes("@lezer/lr")) return "vendor-editor-core";
           if (id.includes("@codemirror/lang-") || id.includes("@lezer/")) return "vendor-editor-languages";
           if (id.includes("@codemirror") || id.includes("codemirror")) return "vendor-editor-core";
