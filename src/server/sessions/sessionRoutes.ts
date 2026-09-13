@@ -1,21 +1,14 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
+import type { UpgradeWebSocket } from "hono/ws";
 import type { SessionBulkMutationRequest, SessionBulkMutationRef, SessionCleanupRequest, AskDialogResult } from "../../shared/apiTypes.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
+import { createHonoRealtimeSocket, type HonoRealtimeSocket } from "../realtime/honoRealtimeSocket.js";
 import type { PiSessionRef, PiSessionService } from "./piSessionService.js";
 import { normalizeSessionCleanupRequest } from "./sessionCleanup.js";
 import { errorMessage, isRecord } from "../utils.js";
 
 type SessionLookup = string | PiSessionRef;
-
-interface SessionQuery {
-  cwd?: string;
-}
-
-interface MessageQuery extends SessionQuery {
-  before?: string;
-  limit?: string;
-}
 
 interface PromptRequestBody {
   cwd?: unknown;
@@ -30,294 +23,363 @@ interface AttachmentsRequestBody {
   folder?: unknown;
 }
 
-export function registerSessionRoutes(app: FastifyInstance, sessions: PiSessionService, eventHub: SessionEventHub, prefix = ""): void {
-  app.get<{ Querystring: SessionQuery }>(`${prefix}/sessions`, async (request, reply) => {
-    if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
+export function registerSessionRoutes(
+  app: Hono,
+  sessions: PiSessionService,
+  eventHub: SessionEventHub,
+  prefix = "",
+  upgradeWebSocket?: UpgradeWebSocket,
+): void {
+  app.get(`${prefix}/sessions`, async (c) => {
+    const cwd = c.req.query("cwd");
+    if (cwd === undefined || cwd === "") return c.json({ error: "cwd query parameter is required" }, 400);
     try {
-      return await sessions.list(normalizeRequestCwd(request.query.cwd));
+      return c.json(await sessions.list(normalizeRequestCwd(cwd)));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.post<{ Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions`, async (request, reply) => {
+  app.post(`${prefix}/sessions`, async (c) => {
     try {
-      const body = requireRecord(request.body);
-      return await sessions.start(normalizeRequestCwd(requireString(body, "cwd")));
+      const body = requireRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.start(normalizeRequestCwd(requireString(body, "cwd"))));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.post<{ Body: SessionCleanupRequest | undefined }>(`${prefix}/sessions/cleanup/preview`, async (request, reply) => {
+  app.post(`${prefix}/sessions/cleanup/preview`, async (c) => {
     try {
-      return await sessions.cleanupPreview(normalizeSessionCleanupRequest(optionalRecord(request.body)));
+      const body = await c.req.json().catch(() => undefined);
+      return c.json(await sessions.cleanupPreview(normalizeSessionCleanupRequest(optionalRecord(body))));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.post<{ Body: SessionCleanupRequest | undefined }>(`${prefix}/sessions/cleanup`, async (request, reply) => {
+  app.post(`${prefix}/sessions/cleanup`, async (c) => {
     try {
-      return await sessions.cleanup(normalizeSessionCleanupRequest(optionalRecord(request.body)));
+      const body = await c.req.json().catch(() => undefined);
+      return c.json(await sessions.cleanup(normalizeSessionCleanupRequest(optionalRecord(body))));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 400);
     }
   });
 
-  app.post<{ Body: SessionBulkMutationRequest | undefined }>(`${prefix}/sessions/bulk/archive`, async (request, reply) => {
+  app.post(`${prefix}/sessions/bulk/archive`, async (c) => {
     try {
-      return await sessions.archiveMany(bulkMutationRefsFromBody(request.body));
+      const body = await c.req.json<SessionBulkMutationRequest>().catch(() => undefined);
+      return c.json(await sessions.archiveMany(bulkMutationRefsFromBody(body)));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Body: SessionBulkMutationRequest | undefined }>(`${prefix}/sessions/bulk/delete-archived`, async (request, reply) => {
+  app.post(`${prefix}/sessions/bulk/delete-archived`, async (c) => {
     try {
-      return await sessions.deleteArchivedMany(bulkMutationRefsFromBody(request.body));
+      const body = await c.req.json<SessionBulkMutationRequest>().catch(() => undefined);
+      return c.json(await sessions.deleteArchivedMany(bulkMutationRefsFromBody(body)));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: MessageQuery }>(`${prefix}/sessions/:sessionId/messages`, async (request, reply) => {
+  app.get(`${prefix}/sessions/:sessionId/messages`, async (c) => {
     try {
-      const page = { ...optionalField("before", optionalNumber(request.query.before)), ...optionalField("limit", optionalNumber(request.query.limit)) };
-      return await sessions.messages(sessionLookupFromQuery(request.params.sessionId, request.query), page);
+      const sessionId = c.req.param("sessionId") ?? "";
+      const before = c.req.query("before");
+      const limit = c.req.query("limit");
+      const page = { ...optionalField("before", optionalNumber(before)), ...optionalField("limit", optionalNumber(limit)) };
+      return c.json(await sessions.messages(sessionLookupFromQuery(sessionId, c.req.query("cwd")), page));
     } catch (error) {
-      return reply.code(404).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 404);
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/status`, async (request, reply) => {
+  app.get(`${prefix}/sessions/:sessionId/status`, async (c) => {
     try {
-      return await sessions.status(sessionLookupFromQuery(request.params.sessionId, request.query));
+      const sessionId = c.req.param("sessionId");
+      return c.json(await sessions.status(sessionLookupFromQuery(sessionId, c.req.query("cwd"))));
     } catch (error) {
-      return reply.code(404).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 404);
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/models`, async (request, reply) => {
+  app.get(`${prefix}/sessions/:sessionId/models`, async (c) => {
     try {
-      return { models: await sessions.availableModels(sessionLookupFromQuery(request.params.sessionId, request.query)) };
+      const sessionId = c.req.param("sessionId");
+      return c.json({ models: await sessions.availableModels(sessionLookupFromQuery(sessionId, c.req.query("cwd"))) });
     } catch (error) {
-      return reply.code(404).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 404);
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; provider?: unknown; modelId?: unknown; persist?: unknown; role?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/model`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/model`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
       const persist = typeof body["persist"] === "boolean" ? body["persist"] : undefined;
       const role = typeof body["role"] === "string" ? body["role"] : undefined;
       const modelOptions: { persist?: boolean; role?: string } = {};
       if (persist !== undefined) modelOptions.persist = persist;
       if (role !== undefined) modelOptions.role = role;
-      return await sessions.setModel(
-        sessionLookupFromBody(request.params.sessionId, body),
+      return c.json(await sessions.setModel(
+        sessionLookupFromBody(sessionId, body),
         requireString(body, "provider"),
         requireString(body, "modelId"),
         modelOptions,
-      );
+      ));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; direction?: "forward" | "backward" } | undefined }>(`${prefix}/sessions/:sessionId/model/cycle`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/model/cycle`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
       const direction = body["direction"];
       if (direction !== undefined && direction !== "forward" && direction !== "backward") throw new Error("direction must be forward or backward");
-      return await sessions.cycleModel(sessionLookupFromBody(request.params.sessionId, body), direction ?? "forward");
+      return c.json(await sessions.cycleModel(sessionLookupFromBody(sessionId, body), direction ?? "forward"));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/thinking-levels`, async (request, reply) => {
+  app.get(`${prefix}/sessions/:sessionId/thinking-levels`, async (c) => {
     try {
-      return { levels: await sessions.availableThinkingLevels(sessionLookupFromQuery(request.params.sessionId, request.query)) };
+      const sessionId = c.req.param("sessionId");
+      return c.json({ levels: await sessions.availableThinkingLevels(sessionLookupFromQuery(sessionId, c.req.query("cwd"))) });
     } catch (error) {
-      return reply.code(404).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 404);
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; level?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/thinking-level`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/thinking-level`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      // The level string is validated against the session's live available levels
-      // in the service, so it stays correct if pi changes the set.
-      return await sessions.setThinkingLevel(sessionLookupFromBody(request.params.sessionId, body), requireThinkingLevel(body["level"]));
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.setThinkingLevel(sessionLookupFromBody(sessionId, body), requireThinkingLevel(body["level"])));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/thinking-level/cycle`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/thinking-level/cycle`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      return await sessions.cycleThinkingLevel(sessionLookupFromBody(request.params.sessionId, body));
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.cycleThinkingLevel(sessionLookupFromBody(sessionId, body)));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/commands`, async (request, reply) => {
+  app.get(`${prefix}/sessions/:sessionId/commands`, async (c) => {
     try {
-      return await sessions.commands(sessionLookupFromQuery(request.params.sessionId, request.query));
+      const sessionId = c.req.param("sessionId");
+      return c.json(await sessions.commands(sessionLookupFromQuery(sessionId, c.req.query("cwd"))));
     } catch (error) {
-      return reply.code(404).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, 404);
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: PromptRequestBody | undefined }>(`${prefix}/sessions/:sessionId/prompt`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/prompt`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      await sessions.prompt(sessionLookupFromBody(request.params.sessionId, body), body["text"], body["streamingBehavior"], body["attachments"]);
-      return { accepted: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json<PromptRequestBody>().catch(() => undefined));
+      await sessions.prompt(sessionLookupFromBody(sessionId, body), body["text"], body["streamingBehavior"], body["attachments"]);
+      return c.json({ accepted: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: AttachmentsRequestBody | undefined }>(`${prefix}/sessions/:sessionId/attachments`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/attachments`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json<AttachmentsRequestBody>().catch(() => undefined));
       const folder = body["folder"];
       if (folder !== undefined && typeof folder !== "string") throw new Error("folder field must be a string");
-      const attachments = await sessions.saveAttachments(sessionLookupFromBody(request.params.sessionId, body), body["attachments"], folder);
-      return { attachments };
+      const attachments = await sessions.saveAttachments(sessionLookupFromBody(sessionId, body), body["attachments"], folder);
+      return c.json({ attachments });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; text?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/shell`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/shell`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      await sessions.shell(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "text"));
-      return { accepted: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.shell(sessionLookupFromBody(sessionId, body), requireString(body, "text"));
+      return c.json({ accepted: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; text?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/commands/run`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/commands/run`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      return await sessions.runCommand(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "text"));
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.runCommand(sessionLookupFromBody(sessionId, body), requireString(body, "text")));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; requestId?: unknown; value?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/commands/respond`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/commands/respond`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
-      return await sessions.respondToCommand(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "requestId"), requireString(body, "value"));
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.respondToCommand(sessionLookupFromBody(sessionId, body), requireString(body, "requestId"), requireString(body, "value")));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; requestId?: unknown; result?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/ask/respond`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/ask/respond`, async (c) => {
     try {
-      const body = optionalRecord(request.body);
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
       const requestId = requireString(body, "requestId");
       /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
       const result = body?.["result"] as AskDialogResult | undefined;
-      return await sessions.respondToAsk(sessionLookupFromBody(request.params.sessionId, body), requestId, result);
+      return c.json(await sessions.respondToAsk(sessionLookupFromBody(sessionId, body), requestId, result));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/abort`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/abort`, async (c) => {
     try {
-      await sessions.abort(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { aborted: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.abort(sessionLookupFromBody(sessionId, body));
+      return c.json({ aborted: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/stop`, (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/stop`, async (c) => {
     try {
-      sessions.stop(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { stopped: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      sessions.stop(sessionLookupFromBody(sessionId, body));
+      return c.json({ stopped: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/archive`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/archive`, async (c) => {
     try {
-      await sessions.archive(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { archived: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.archive(sessionLookupFromBody(sessionId, body));
+      return c.json({ archived: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/archive-tree`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/archive-tree`, async (c) => {
     try {
-      return await sessions.archiveTree(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      return c.json(await sessions.archiveTree(sessionLookupFromBody(sessionId, body)));
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/restore`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/restore`, async (c) => {
     try {
-      await sessions.restore(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { restored: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.restore(sessionLookupFromBody(sessionId, body));
+      return c.json({ restored: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.delete<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId`, async (request, reply) => {
+  app.delete(`${prefix}/sessions/:sessionId`, async (c) => {
     try {
-      await sessions.deleteArchived(sessionLookupFromQuery(request.params.sessionId, request.query));
-      return { deleted: true };
+      const sessionId = c.req.param("sessionId");
+      await sessions.deleteArchived(sessionLookupFromQuery(sessionId, c.req.query("cwd")));
+      return c.json({ deleted: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/reload`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/reload`, async (c) => {
     try {
-      await sessions.reload(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { reloaded: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.reload(sessionLookupFromBody(sessionId, body));
+      return c.json({ reloaded: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/detach-parent`, async (request, reply) => {
+  app.post(`${prefix}/sessions/:sessionId/detach-parent`, async (c) => {
     try {
-      await sessions.detachParent(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));
-      return { detached: true };
+      const sessionId = c.req.param("sessionId");
+      const body = optionalRecord(await c.req.json().catch(() => undefined));
+      await sessions.detachParent(sessionLookupFromBody(sessionId, body));
+      return c.json({ detached: true });
     } catch (error) {
-      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+      return c.json({ error: errorMessage(error) }, mutationErrorStatus(error));
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
-    // Only the id matters for event subscription; cwd is intentionally ignored
-    // so a malformed value cannot throw inside the websocket handler.
-    eventHub.add(request.params.sessionId, socket);
-  });
+  if (upgradeWebSocket !== undefined) {
+    app.get(`${prefix}/sessions/:sessionId/events`, upgradeWebSocket((c) => {
+      const sessionId = c.req.param("sessionId") ?? "";
+      let adapter: HonoRealtimeSocket | undefined;
+      return {
+        onOpen(_evt, ws) {
+          adapter = createHonoRealtimeSocket(ws);
+          eventHub.add(sessionId, adapter);
+        },
+        onClose() {
+          adapter?._triggerClose();
+        },
+      };
+    }));
 
-  app.get(`${prefix}/sessions/events`, { websocket: true }, (socket) => {
-    eventHub.addGlobal(socket);
-  });
+    app.get(`${prefix}/sessions/events`, upgradeWebSocket(() => {
+      let adapter: HonoRealtimeSocket | undefined;
+      return {
+        onOpen(_evt, ws) {
+          adapter = createHonoRealtimeSocket(ws);
+          eventHub.addGlobal(adapter);
+        },
+        onClose() {
+          adapter?._triggerClose();
+        },
+      };
+    }));
 
-  app.get(`${prefix}/events`, { websocket: true }, (socket) => {
-    eventHub.addGlobal(socket);
-  });
+    app.get(`${prefix}/events`, upgradeWebSocket(() => {
+      let adapter: HonoRealtimeSocket | undefined;
+      return {
+        onOpen(_evt, ws) {
+          adapter = createHonoRealtimeSocket(ws);
+          eventHub.addGlobal(adapter);
+        },
+        onClose() {
+          adapter?._triggerClose();
+        },
+      };
+    }));
+  }
 }
 
 function bulkMutationRefsFromBody(body: SessionBulkMutationRequest | undefined): SessionBulkMutationRef[] {
@@ -337,8 +399,8 @@ function parseBulkMutationRef(value: unknown): SessionBulkMutationRef {
   return { id, cwd: normalizeRequestCwd(cwd) };
 }
 
-function sessionLookupFromQuery(id: string, query: SessionQuery): SessionLookup {
-  return sessionLookupFromCwd(id, query.cwd);
+function sessionLookupFromQuery(id: string, cwd: string | undefined): SessionLookup {
+  return cwd === undefined || cwd === "" ? id : { id, cwd: normalizeRequestCwd(cwd) };
 }
 
 function sessionLookupFromBody(id: string, body: Record<string, unknown>): SessionLookup {
@@ -346,12 +408,6 @@ function sessionLookupFromBody(id: string, body: Record<string, unknown>): Sessi
   if (cwd === undefined || cwd === "") return id;
   if (typeof cwd !== "string") throw new Error("cwd field must be a string");
   return { id, cwd: normalizeRequestCwd(cwd) };
-}
-
-function sessionLookupFromCwd(id: string, cwd: string | undefined): SessionLookup {
-  // Legacy id-only lookups (no cwd) remain supported; a supplied cwd is
-  // normalized here so everything past the route layer sees canonical paths.
-  return cwd === undefined || cwd === "" ? id : { id, cwd: normalizeRequestCwd(cwd) };
 }
 
 function optionalRecord(value: unknown): Record<string, unknown> {
@@ -385,13 +441,7 @@ function optionalNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-
 function mutationErrorStatus(error: unknown): 400 | 404 {
-  return isSessionNotFoundError(error) ? 404 : 400;
-}
-
-function isSessionNotFoundError(error: unknown): boolean {
   const message = errorMessage(error);
-  return message === "Session not found" || message === "Archived session not found";
+  return message === "Session not found" || message === "Archived session not found" ? 404 : 400;
 }
-

@@ -1,60 +1,79 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import type { AuthService } from "./authService.js";
 
-export function registerAuthRoutes(app: FastifyInstance, auth: AuthService, prefix = ""): void {
-  app.get<{ Querystring: { mode?: "login" | "logout"; authType?: "oauth" | "api_key" } }>(`${prefix}/auth/providers`, async (request, reply) => {
+export function registerAuthRoutes(app: Hono, auth: AuthService, prefix = ""): void {
+  app.get(`${prefix}/auth/providers`, async (c) => {
     try {
-      return await auth.authProviders(request.query.mode ?? "login", request.query.authType);
+      const mode = c.req.query("mode");
+      const authType = c.req.query("authType");
+      const providers = await auth.authProviders(
+        mode === "logout" ? "logout" : "login",
+        authType === "oauth" || authType === "api_key" ? authType : undefined,
+      );
+      return c.json(providers);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
 
-  app.post<{ Body: { providerId: string; key: string } }>(`${prefix}/auth/api-key`, async (request, reply) => {
+  app.post(`${prefix}/auth/api-key`, async (c) => {
     try {
-      return await auth.saveApiKey(request.body.providerId, request.body.key);
+      const body = await c.req.json<{ providerId: string; key: string }>();
+      const result = await auth.saveApiKey(body.providerId, body.key);
+      return c.json(result);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Body: { providerId: string } }>(`${prefix}/auth/logout`, async (request, reply) => {
+  app.post(`${prefix}/auth/logout`, async (c) => {
     try {
-      return await auth.logoutProvider(request.body.providerId);
+      const body = await c.req.json<{ providerId: string }>();
+      const result = await auth.logoutProvider(body.providerId);
+      return c.json(result);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Body: { providerId: string } }>(`${prefix}/auth/oauth`, async (request, reply) => {
+  app.post(`${prefix}/auth/oauth`, async (c) => {
     try {
-      return auth.startOAuthLogin(request.body.providerId);
+      const body = await c.req.json<{ providerId: string }>();
+      const result = auth.startOAuthLogin(body.providerId);
+      return c.json(result);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { flowId: string } }>(`${prefix}/auth/oauth/:flowId`, async (request, reply) => {
+  app.get(`${prefix}/auth/oauth/:flowId`, async (c) => {
     try {
-      return auth.oauthFlow(request.params.flowId);
+      const flowId = c.req.param("flowId");
+      const flow = auth.oauthFlow(flowId);
+      return c.json(flow);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
     }
   });
 
-  app.post<{ Params: { flowId: string }; Body: { requestId: string; value: string } }>(`${prefix}/auth/oauth/:flowId/respond`, async (request, reply) => {
+  app.post(`${prefix}/auth/oauth/:flowId/respond`, async (c) => {
     try {
-      return auth.respondToOAuthFlow(request.params.flowId, request.body.requestId, request.body.value);
+      const flowId = c.req.param("flowId");
+      const body = await c.req.json<{ requestId: string; value: string }>();
+      const result = auth.respondToOAuthFlow(flowId, body.requestId, body.value);
+      return c.json(result);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Params: { flowId: string } }>(`${prefix}/auth/oauth/:flowId/cancel`, async (request, reply) => {
+  app.post(`${prefix}/auth/oauth/:flowId/cancel`, async (c) => {
     try {
-      return auth.cancelOAuthFlow(request.params.flowId);
+      const flowId = c.req.param("flowId");
+      const result = auth.cancelOAuthFlow(flowId);
+      return c.json(result);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 }

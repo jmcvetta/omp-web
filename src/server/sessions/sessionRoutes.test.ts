@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
-import fastifyWebsocket from "@fastify/websocket";
+import { HonoTestApp } from "../testUtils.js";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkMutationRef, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
@@ -8,17 +7,16 @@ import { PiSessionService, type PiSessionManagerGateway, type PiSessionRef } fro
 import { registerSessionRoutes } from "./sessionRoutes.js";
 import type { NormalizedSessionCleanupRequest } from "./sessionCleanup.js";
 
-let app: FastifyInstance;
+let app: HonoTestApp;
 let service: PiSessionService;
 let sessionManager: RejectingSessionManager;
 
 beforeEach(async () => {
-  app = Fastify({ logger: false });
-  await app.register(fastifyWebsocket);
+  app = new HonoTestApp();
   sessionManager = new RejectingSessionManager();
   const eventHub = new SessionEventHub();
   service = new PiSessionService(eventHub, { sessionManager, heartbeatIntervalMs: 60_000 });
-  registerSessionRoutes(app, service, eventHub);
+  registerSessionRoutes(app.app, service, eventHub);
 });
 
 afterEach(async () => {
@@ -36,11 +34,10 @@ describe("session routes", () => {
   });
 
   it("keeps legacy per-session routes usable without cwd", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const statusResponse = await routeApp.inject({ method: "GET", url: "/sessions/session-1/status" });
@@ -56,11 +53,10 @@ describe("session routes", () => {
   });
 
   it("forwards prompt attachments and supports the save-attachments route", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     const attachments = [{ kind: "image", mimeType: "image/png", data: "QUJD", name: "shot.png" }];
     try {
@@ -78,11 +74,10 @@ describe("session routes", () => {
   });
 
   it("passes cwd when per-session routes include workspace context", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       // The route normalizes the request cwd, so the service sees the resolved
@@ -101,11 +96,10 @@ describe("session routes", () => {
   });
 
   it("reloads a session through the reload route, forwarding workspace context", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const requestCwd = resolve("/repo");
@@ -121,12 +115,11 @@ describe("session routes", () => {
   });
 
   it("maps reload failures to a mutation error status", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
     routeService.reloadError = new Error("Stop current session activity before reloading");
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const reloadResponse = await routeApp.inject({ method: "POST", url: "/sessions/session-1/reload", payload: {} });
@@ -140,11 +133,10 @@ describe("session routes", () => {
   });
 
   it("normalizes cleanup requests for preview and execute routes", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const previewResponse = await routeApp.inject({ method: "POST", url: "/sessions/cleanup/preview", payload: { archiveIdleDays: 30, deleteArchivedDays: null, projectCwds: ["/repo-a", "/repo-a"] } });
@@ -161,11 +153,10 @@ describe("session routes", () => {
   });
 
   it("rejects invalid cleanup thresholds before calling the service", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const response = await routeApp.inject({ method: "POST", url: "/sessions/cleanup", payload: { archiveIdleDays: -1 } });
@@ -180,11 +171,10 @@ describe("session routes", () => {
   });
 
   it("routes bulk archive and delete requests with normalized session refs", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const requestCwd = resolve("/repo");
@@ -204,11 +194,10 @@ describe("session routes", () => {
   });
 
   it("rejects malformed bulk mutation bodies before calling the service", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const response = await routeApp.inject({ method: "POST", url: "/sessions/bulk/archive", payload: { sessions: [{ cwd: "/repo" }] } });
@@ -222,11 +211,10 @@ describe("session routes", () => {
     }
   });
   it("forwards model selection payload including persist option to session service", async () => {
-    const routeApp = Fastify({ logger: false });
-    await routeApp.register(fastifyWebsocket);
+    const routeApp = new HonoTestApp();
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService(eventHub);
-    registerSessionRoutes(routeApp, routeService, eventHub);
+    registerSessionRoutes(routeApp.app, routeService, eventHub);
 
     try {
       const response = await routeApp.inject({

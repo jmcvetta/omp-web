@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
+import type { UpgradeWebSocket } from "hono/ws";
 import type { RawData } from "ws";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunStatus } from "../../shared/apiTypes.js";
@@ -21,104 +22,133 @@ export interface TerminalRouteService {
   cancelCommandRun(runId: string): TerminalCommandRun;
 }
 
-export function registerTerminalRoutes(app: FastifyInstance, terminals: TerminalRouteService, prefix = ""): void {
-  app.get<{ Querystring: { cwd?: string } }>(`${prefix}/terminals`, (request, reply) => {
-    if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
+export function registerTerminalRoutes(
+  app: Hono,
+  terminals: TerminalRouteService,
+  prefix = "",
+  upgradeWebSocket?: UpgradeWebSocket,
+): void {
+  app.get(`${prefix}/terminals`, (c) => {
+    const cwd = c.req.query("cwd");
+    if (cwd === undefined || cwd === "") return c.json({ error: "cwd query parameter is required" }, 400);
     try {
-      return terminals.list(normalizeRequestCwd(request.query.cwd));
+      return c.json(terminals.list(normalizeRequestCwd(cwd)));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Body: { cwd: string; name?: string; cols?: number; rows?: number } }>(`${prefix}/terminals`, (request, reply) => {
+  app.post(`${prefix}/terminals`, async (c) => {
     try {
-      return terminals.create({ ...request.body, cwd: normalizeRequestCwd(request.body.cwd) });
+      const body = await c.req.json<{ cwd: string; name?: string; cols?: number; rows?: number }>();
+      return c.json(terminals.create({ ...body, cwd: normalizeRequestCwd(body.cwd) }));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.delete<{ Querystring: { cwd?: string } }>(`${prefix}/terminals`, (request, reply) => {
-    if (request.query.cwd === undefined || request.query.cwd === "") return reply.code(400).send({ error: "cwd query parameter is required" });
+  app.delete(`${prefix}/terminals`, (c) => {
+    const cwd = c.req.query("cwd");
+    if (cwd === undefined || cwd === "") return c.json({ error: "cwd query parameter is required" }, 400);
     try {
-      terminals.closeForCwd(normalizeRequestCwd(request.query.cwd));
-      return { closed: true };
+      terminals.closeForCwd(normalizeRequestCwd(cwd));
+      return c.json({ closed: true });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Body: RunTerminalCommandOptions }>(`${prefix}/terminal-command-runs`, (request, reply) => {
+  app.post(`${prefix}/terminal-command-runs`, async (c) => {
     try {
-      return terminals.runCommand({ ...request.body, cwd: normalizeRequestCwd(request.body.cwd) });
+      const body = await c.req.json<RunTerminalCommandOptions>();
+      return c.json(terminals.runCommand({ ...body, cwd: normalizeRequestCwd(body.cwd) }));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Querystring: TerminalCommandRunQuery }>(`${prefix}/terminal-command-runs`, (request, reply) => {
+  app.get(`${prefix}/terminal-command-runs`, (c) => {
     try {
-      return terminals.listCommandRuns(parseCommandRunFilter(request.query));
+      return c.json(terminals.listCommandRuns(parseCommandRunFilter(c.req.query())));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.post<{ Params: { runId: string } }>(`${prefix}/terminal-command-runs/:runId/cancel`, (request, reply) => {
+  app.post(`${prefix}/terminal-command-runs/:runId/cancel`, (c) => {
     try {
-      return terminals.cancelCommandRun(request.params.runId);
+      const runId = c.req.param("runId");
+      return c.json(terminals.cancelCommandRun(runId));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.get<{ Params: { runId: string } }>(`${prefix}/terminal-command-runs/:runId`, (request, reply) => {
-    const run = terminals.getCommandRun(request.params.runId);
-    if (run === undefined) return reply.code(404).send({ error: "Terminal command run not found" });
-    return run;
+  app.get(`${prefix}/terminal-command-runs/:runId`, (c) => {
+    const runId = c.req.param("runId");
+    const run = terminals.getCommandRun(runId);
+    if (run === undefined) return c.json({ error: "Terminal command run not found" }, 404);
+    return c.json(run);
   });
 
-  app.post<{ Params: { terminalId: string } }>(`${prefix}/terminals/:terminalId/continue`, (request, reply) => {
+  app.post(`${prefix}/terminals/:terminalId/continue`, (c) => {
     try {
-      return terminals.continue(request.params.terminalId);
+      const terminalId = c.req.param("terminalId");
+      return c.json(terminals.continue(terminalId));
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
 
-  app.delete<{ Params: { terminalId: string } }>(`${prefix}/terminals/:terminalId`, (request) => {
-    terminals.close(request.params.terminalId);
-    return { closed: true };
+  app.delete(`${prefix}/terminals/:terminalId`, (c) => {
+    const terminalId = c.req.param("terminalId");
+    terminals.close(terminalId);
+    return c.json({ closed: true });
   });
 
-  app.get<{ Params: { terminalId: string }; Querystring: { cols?: string; rows?: string } }>(`${prefix}/terminals/:terminalId/socket`, { websocket: true }, (socket, request) => {
-    let detach: () => void = () => undefined;
-    try {
-      const initialSize = parseTerminalSize(request.query.cols, request.query.rows);
-      if (initialSize !== undefined) terminals.resize(request.params.terminalId, initialSize.cols, initialSize.rows);
-      detach = terminals.attach(request.params.terminalId, {
-        output: (data, replay) => { socket.send(JSON.stringify({ type: "output", data, replay })); },
-        exit: (exitCode) => { socket.send(JSON.stringify({ type: "exit", exitCode })); },
-      });
-    } catch (error) {
-      socket.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-      socket.close();
-      return;
-    }
+  if (upgradeWebSocket !== undefined) {
+    app.get(`${prefix}/terminals/:terminalId/socket`, upgradeWebSocket((c) => {
+      const terminalId = c.req.param("terminalId") ?? "";
+      const cols = c.req.query("cols");
+      const rows = c.req.query("rows");
+      let detach: () => void = () => undefined;
 
-    socket.on("message", (data) => {
-      try {
-        const message = parseClientMessage(data);
-        if (message.type === "input") terminals.write(request.params.terminalId, message.data);
-        if (message.type === "resize") terminals.resize(request.params.terminalId, message.cols, message.rows);
-      } catch (error) {
-        socket.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-      }
-    });
-    socket.on("close", () => { detach(); });
-    socket.on("error", () => { detach(); });
-  });
+      return {
+        onOpen(_evt, ws) {
+          try {
+            const initialSize = parseTerminalSize(cols, rows);
+            if (initialSize !== undefined) terminals.resize(terminalId, initialSize.cols, initialSize.rows);
+            detach = terminals.attach(terminalId, {
+              output: (data, replay) => {
+                ws.send(JSON.stringify({ type: "output", data, replay }));
+              },
+              exit: (exitCode) => {
+                ws.send(JSON.stringify({ type: "exit", exitCode }));
+              },
+            });
+          } catch (error) {
+            ws.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+            ws.close();
+          }
+        },
+        onMessage(evt) {
+          try {
+            const message = parseClientMessage(evt.data as unknown as RawData | string | ArrayBuffer);
+            if (message.type === "input") terminals.write(terminalId, message.data);
+            if (message.type === "resize") terminals.resize(terminalId, message.cols, message.rows);
+          } catch (error) {
+            // ignore malformed client message
+          }
+        },
+        onClose() {
+          detach();
+        },
+        onError() {
+          detach();
+        },
+      };
+    }));
+  }
 }
 
 type ClientTerminalMessage =
@@ -159,7 +189,7 @@ function parseMetadataFilter(value: string): Record<string, string> {
   }));
 }
 
-function parseClientMessage(data: RawData): ClientTerminalMessage {
+function parseClientMessage(data: RawData | string | ArrayBuffer): ClientTerminalMessage {
   const value: unknown = JSON.parse(rawDataToString(data));
   if (!isRecord(value) || typeof value["type"] !== "string") throw new Error("Invalid terminal message");
   if (value["type"] === "input" && typeof value["data"] === "string") return { type: "input", data: value["data"] };
@@ -167,10 +197,9 @@ function parseClientMessage(data: RawData): ClientTerminalMessage {
   throw new Error("Invalid terminal message");
 }
 
-function rawDataToString(data: RawData): string {
+function rawDataToString(data: RawData | string | ArrayBuffer): string {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
   if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
-  return data.toString("utf8");
+  return data.toString();
 }
-

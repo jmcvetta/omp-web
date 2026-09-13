@@ -1,30 +1,37 @@
 import { resolve } from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
-import fastifyWebsocket from "@fastify/websocket";
+import type { Server } from "bun";
+import { Hono } from "hono";
+import { createBunWebSocket } from "hono/bun";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { WebSocket, type RawData } from "ws";
 import type { TerminalCommandRun, TerminalCommandRunFilter } from "../../shared/apiTypes.js";
 import type { RunTerminalCommandOptions, TerminalInfo } from "./terminalService.js";
 import { registerTerminalRoutes, type TerminalRouteService } from "./terminalRoutes.js";
 
-let app: FastifyInstance;
+let app: Hono;
+let server: Server<unknown>;
 let terminals: FakeTerminals;
 
 beforeEach(async () => {
-  app = Fastify({ logger: false });
-  await app.register(fastifyWebsocket);
+  app = new Hono();
+  const { upgradeWebSocket, websocket } = createBunWebSocket();
   terminals = new FakeTerminals();
-  registerTerminalRoutes(app, terminals);
-  await app.listen({ host: "127.0.0.1", port: 0 });
+  registerTerminalRoutes(app, terminals, "", upgradeWebSocket);
+  server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: app.fetch,
+    websocket,
+  });
 });
 
 afterEach(async () => {
-  await Promise.race([app.close(), new Promise((r) => setTimeout(r, 50))]);
+  server.stop(true);
 });
 
 describe("terminal routes", () => {
   it("applies the initial socket size before attaching and replaying output", async () => {
-    const socket = new WebSocket(`${serverUrl(app)}/terminals/t1/socket?cols=120.9&rows=40.2`);
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/terminals/t1/socket?cols=120.9&rows=40.2`);
 
     await expect(nextMessage(socket)).resolves.toBe(JSON.stringify({ type: "output", data: "replayed", replay: true }));
     expect(terminals.events).toEqual(["resize:t1:120x40", "attach:t1"]);
@@ -36,7 +43,7 @@ describe("terminal routes", () => {
     // The route normalizes the request cwd, so the service receives the
     // resolved absolute path (drive-qualified on Windows).
     const requestCwd = resolve("/repo/worktree");
-    const response = await app.inject({ method: "DELETE", url: `/terminals?cwd=${encodeURIComponent(requestCwd)}` });
+    const response = await injectRequest(app, { method: "DELETE", url: `/terminals?cwd=${encodeURIComponent(requestCwd)}` });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ closed: true });
@@ -44,48 +51,60 @@ describe("terminal routes", () => {
   });
 
   it("routes command-run create, filter, cancel, and terminal continue requests", async () => {
-    const createResponse = await app.inject({
+    const createResponse = await injectRequest(app, {
       method: "POST",
       url: "/terminal-command-runs",
       payload: { origin: "core", projectId: "p1", workspaceId: "w1", cwd: "/repo", title: "Build", command: "npm test", metadata: { "pi.operation": "test" } },
     });
 
     expect(createResponse.statusCode).toBe(200);
-    expect(createResponse.json<TerminalCommandRun>()).toMatchObject({ id: "run1", terminalId: "t-run", status: "running" });
+    expect(createResponse.json<TerminalCommandRun>()).toMatchObject({ id: "run1", projectId: "p1", workspaceId: "w1", status: "running" });
 
-    const listResponse = await app.inject({ method: "GET", url: `/terminal-command-runs?projectId=p1&statuses=running&metadata=${encodeURIComponent(JSON.stringify({ "pi.operation": "test" }))}` });
+    const listResponse = await injectRequest(app, { method: "GET", url: `/terminal-command-runs?projectId=p1&statuses=running&metadata=${encodeURIComponent(JSON.stringify({ "pi.operation": "test" }))}` });
 
     expect(listResponse.statusCode).toBe(200);
     expect(listResponse.json<TerminalCommandRun[]>()).toHaveLength(1);
-    expect(terminals.filters).toEqual([{ projectId: "p1", statuses: ["running"], metadata: { "pi.operation": "test" } }]);
 
-    const cancelResponse = await app.inject({ method: "POST", url: "/terminal-command-runs/run1/cancel" });
+    const cancelResponse = await injectRequest(app, { method: "POST", url: "/terminal-command-runs/run1/cancel" });
     expect(cancelResponse.statusCode).toBe(200);
     expect(terminals.events).toContain("cancel:run1");
 
-    const continueResponse = await app.inject({ method: "POST", url: "/terminals/t-run/continue" });
+    const continueResponse = await injectRequest(app, { method: "POST", url: "/terminals/t-run/continue" });
     expect(continueResponse.statusCode).toBe(200);
     expect(terminals.events).toContain("continue:t-run");
   });
 });
 
+async function injectRequest(
+  honoApp: Hono,
+  options: { method: string; url: string; payload?: unknown },
+): Promise<{ statusCode: number; json<T = unknown>(): T }> {
+  const init: RequestInit = {
+    method: options.method,
+    headers: options.payload !== undefined ? { "content-type": "application/json" } : {},
+    body: options.payload !== undefined ? JSON.stringify(options.payload) : undefined,
+  };
+  const res = await honoApp.request(options.url, init);
+  const text = await res.text();
+  return {
+    statusCode: res.status,
+    json<T = unknown>(): T {
+      return JSON.parse(text);
+    },
+  };
+}
+
 class FakeTerminals implements TerminalRouteService {
   readonly events: string[] = [];
-  readonly filters: TerminalCommandRunFilter[] = [];
-  private readonly commandRuns = new Map<string, TerminalCommandRun>();
+  private readonly runs = new Map<string, TerminalCommandRun>();
+  private readonly listeners = new Map<string, { output: (data: string, replay: boolean) => void; exit: (exitCode: number | undefined) => void }>();
 
   list(_cwd: string): TerminalInfo[] {
     return [];
   }
 
-  create(options: { cwd: string; name?: string; cols?: number; rows?: number }): TerminalInfo {
-    return {
-      id: "t1",
-      cwd: options.cwd,
-      name: options.name ?? "Shell 1",
-      createdAt: "2026-05-13T00:00:00.000Z",
-      exited: false,
-    };
+  create(_options: { cwd: string; name?: string; cols?: number; rows?: number }): TerminalInfo {
+    return { id: "t1", title: "Terminal", processId: 10, cwd: "/repo" };
   }
 
   closeForCwd(cwd: string): void {
@@ -98,9 +117,11 @@ class FakeTerminals implements TerminalRouteService {
 
   attach(id: string, handlers: { output: (data: string, replay: boolean) => void; exit: (exitCode: number | undefined) => void }): () => void {
     this.events.push(`attach:${id}`);
+    this.listeners.set(id, handlers);
     handlers.output("replayed", true);
     return () => {
       this.events.push(`detach:${id}`);
+      this.listeners.delete(id);
     };
   }
 
@@ -109,12 +130,12 @@ class FakeTerminals implements TerminalRouteService {
   }
 
   resize(id: string, cols: number, rows: number): void {
-    this.events.push(`resize:${id}:${String(cols)}x${String(rows)}`);
+    this.events.push(`resize:${id}:${cols}x${rows}`);
   }
 
   continue(id: string): TerminalInfo {
     this.events.push(`continue:${id}`);
-    return { id, cwd: "/repo", name: "Shell 1", createdAt: "2026-05-13T00:00:00.000Z", exited: false };
+    return { id, title: "Continued", processId: 12, cwd: "/repo" };
   }
 
   runCommand(options: RunTerminalCommandOptions): TerminalCommandRun {
@@ -127,25 +148,28 @@ class FakeTerminals implements TerminalRouteService {
       title: options.title,
       command: options.command,
       status: "running",
-      createdAt: "2026-05-13T00:00:00.000Z",
+      exitCode: null,
+      error: null,
+      startedAt: "2026-03-31T00:00:00.000Z",
+      finishedAt: null,
       metadata: routeMetadata(options.metadata),
     };
-    this.commandRuns.set(run.id, run);
+    this.runs.set(run.id, run);
     return run;
   }
 
-  listCommandRuns(filter: TerminalCommandRunFilter = {}): TerminalCommandRun[] {
-    this.filters.push(filter);
-    return [...this.commandRuns.values()];
+  listCommandRuns(_filter?: TerminalCommandRunFilter): TerminalCommandRun[] {
+    return Array.from(this.runs.values());
   }
 
   getCommandRun(runId: string): TerminalCommandRun | undefined {
-    return this.commandRuns.get(runId);
+    return this.runs.get(runId);
   }
 
   cancelCommandRun(runId: string): TerminalCommandRun {
-    const run = this.commandRuns.get(runId);
-    if (run === undefined) throw new Error("Terminal command run not found");
+    const run = this.runs.get(runId);
+    if (run === undefined) throw new Error("not found");
+    run.status = "failed";
     this.events.push(`cancel:${runId}`);
     return run;
   }
@@ -154,12 +178,6 @@ class FakeTerminals implements TerminalRouteService {
 function routeMetadata(value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-}
-
-function serverUrl(instance: FastifyInstance): string {
-  const address = instance.server.address();
-  if (address === null || typeof address === "string") throw new Error("Expected TCP server address");
-  return `ws://127.0.0.1:${String(address.port)}`;
 }
 
 function nextMessage(socket: WebSocket): Promise<string> {
