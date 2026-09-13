@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.0.0
+
+- 🚀 Complete migration of backend services (`sessiond` and `app`) from Fastify to Hono and native `Bun.serve`.
+- ⚡ Removed Fastify, `@fastify/websocket`, and `@fastify/static` in favor of standard WHATWG fetch and `createBunWebSocket`.
+- ♻️ Streamlined daemon client, gateway contracts, and replaced `nanoid` with native `crypto.randomUUID()`.
+- ♻️ Simplified session controller lifecycle and pruned legacy CodeMirror diff mode.
+- 🧹 Purged unused developer skills, `knip`, and unused screenshot capture automation.
+- 📐 Adopted standard semantic versioning (`v2.0.0`) moving forward.
+
 ## v1.202609.0
 
 - ✨ Add mobile sidebar edge swipe gestures, hide-workspaces setting, and bottom navigation bar.
