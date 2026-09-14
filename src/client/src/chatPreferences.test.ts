@@ -72,6 +72,13 @@ describe("chatPreferences", () => {
     expect(loadChatPreferences()).toEqual(custom);
   });
 
+  it("replaces malformed storage when saving an override", () => {
+    storage["omp-web:chat-preferences"] = "{malformed";
+    saveChatPreferenceOverrides({ vimMode: true });
+    expect(JSON.parse(storage["omp-web:chat-preferences"] ?? "{}")).toEqual({ vimMode: true });
+    expect(loadChatPreferences().vimMode).toBe(true);
+  });
+
   it("falls back to default for missing fields in stored JSON", () => {
     storage["omp-web:chat-preferences"] = JSON.stringify({ showThinking: false });
     const loaded = loadChatPreferences();

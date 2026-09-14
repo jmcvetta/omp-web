@@ -93,10 +93,13 @@ export function saveChatPreferenceOverrides(overrides: Partial<ChatPreferences>)
   try {
     if (typeof localStorage !== "undefined") {
       const raw = localStorage.getItem(CHAT_PREFERENCES_STORAGE_KEY);
-      const parsed: unknown = raw === null || raw === "" ? {} : JSON.parse(raw);
-      const stored = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? { ...parsed }
-        : {};
+      let stored: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = raw === null || raw === "" ? {} : JSON.parse(raw);
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) stored = { ...parsed };
+      } catch {
+        // Replace malformed stored preferences with the new overrides.
+      }
       localStorage.setItem(CHAT_PREFERENCES_STORAGE_KEY, JSON.stringify({ ...stored, ...overrides }));
     }
   } catch {
