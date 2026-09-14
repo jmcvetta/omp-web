@@ -5,6 +5,7 @@ import {
   isChatPreferences,
   loadChatPreferences,
   saveChatPreferences,
+  setChatPreferenceDefaults,
   setPreferencesEventTarget,
   type ChatPreferences,
 } from "./chatPreferences";
@@ -27,15 +28,25 @@ describe("chatPreferences", () => {
       configurable: true,
     });
     setPreferencesEventTarget(testTarget);
+    setChatPreferenceDefaults({});
   });
 
   afterEach(() => {
+    setChatPreferenceDefaults({});
     storage = {};
     setPreferencesEventTarget(undefined);
   });
 
   it("returns default preferences when storage is empty", () => {
     expect(loadChatPreferences()).toEqual(DEFAULT_CHAT_PREFERENCES);
+  });
+
+  it("uses the config default unless the browser has an explicit Vim preference", () => {
+    setChatPreferenceDefaults({ vimMode: true });
+    expect(loadChatPreferences().vimMode).toBe(true);
+
+    storage["omp-web:chat-preferences"] = JSON.stringify({ vimMode: false });
+    expect(loadChatPreferences().vimMode).toBe(false);
   });
 
   it("saves and loads customized chat preferences", () => {
