@@ -154,10 +154,10 @@ export class SettingsGeneralPanel extends LitElement {
   }
   private renderChatDisplaySettings(): TemplateResult {
     return html`
-      <section class="settings-card" aria-label="Chat settings">
+      <section class="settings-card" aria-label="Chat display settings">
         <div class="card-heading">
-          <h3>Chat</h3>
-          <p>Configure the chat transcript, agent status, and prompt editor.</p>
+          <h3>Chat display</h3>
+          <p>Configure which elements are visible in the chat transcript and agent status.</p>
         </div>
         <div class="chat-display-options">
           <label class="toggle-row">
