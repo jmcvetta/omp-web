@@ -19,7 +19,7 @@ import {
   isChatPreferences,
   loadChatPreferences,
   preferencesEventTarget,
-  saveChatPreferences,
+  saveChatPreferenceOverrides,
   type ChatPreferences,
 } from "../../chatPreferences";
 
@@ -233,7 +233,7 @@ export class SettingsGeneralPanel extends LitElement {
     if (!(input instanceof HTMLInputElement)) return;
     const next = { ...this.chatPrefs, [key]: input.checked };
     this.chatPrefs = next;
-    saveChatPreferences(next);
+    saveChatPreferenceOverrides({ [key]: input.checked });
   }
 
   private renderSelectedMachineAccessSettings(): TemplateResult {

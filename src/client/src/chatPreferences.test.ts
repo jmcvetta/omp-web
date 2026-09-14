@@ -4,7 +4,7 @@ import {
   DEFAULT_CHAT_PREFERENCES,
   isChatPreferences,
   loadChatPreferences,
-  saveChatPreferences,
+  saveChatPreferenceOverrides,
   setChatPreferenceDefaults,
   setPreferencesEventTarget,
   type ChatPreferences,
@@ -45,8 +45,15 @@ describe("chatPreferences", () => {
     setChatPreferenceDefaults({ vimMode: true });
     expect(loadChatPreferences().vimMode).toBe(true);
 
-    storage["omp-web:chat-preferences"] = JSON.stringify({ vimMode: false });
-    expect(loadChatPreferences().vimMode).toBe(false);
+    saveChatPreferenceOverrides({ showStatusBar: true });
+    expect(JSON.parse(storage["omp-web:chat-preferences"] ?? "{}")).toEqual({ showStatusBar: true });
+
+    setChatPreferenceDefaults({ vimMode: false });
+    expect(loadChatPreferences()).toMatchObject({ showStatusBar: true, vimMode: false });
+
+    saveChatPreferenceOverrides({ vimMode: true });
+    setChatPreferenceDefaults({ vimMode: false });
+    expect(loadChatPreferences().vimMode).toBe(true);
   });
 
   it("saves and loads customized chat preferences", () => {
@@ -61,7 +68,7 @@ describe("chatPreferences", () => {
       bottomMobileNav: true,
       hideBreadcrumbs: true,
     };
-    saveChatPreferences(custom);
+    saveChatPreferenceOverrides(custom);
     expect(loadChatPreferences()).toEqual(custom);
   });
 
@@ -99,7 +106,7 @@ describe("chatPreferences", () => {
       bottomMobileNav: true,
       hideBreadcrumbs: true,
     };
-    saveChatPreferences(next);
+    saveChatPreferenceOverrides(next);
     testTarget.removeEventListener(CHAT_PREFERENCES_CHANGED_EVENT, handler);
 
     expect(received).toEqual(next);

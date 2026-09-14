@@ -88,14 +88,21 @@ export function loadChatPreferences(): ChatPreferences {
   }
 }
 
-export function saveChatPreferences(prefs: ChatPreferences): void {
+/** Persists only the supplied browser preference overrides. */
+export function saveChatPreferenceOverrides(overrides: Partial<ChatPreferences>): void {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(CHAT_PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+      const raw = localStorage.getItem(CHAT_PREFERENCES_STORAGE_KEY);
+      const parsed: unknown = raw === null || raw === "" ? {} : JSON.parse(raw);
+      const stored = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? { ...parsed }
+        : {};
+      localStorage.setItem(CHAT_PREFERENCES_STORAGE_KEY, JSON.stringify({ ...stored, ...overrides }));
     }
   } catch {
     // Ignore storage quota/privacy errors.
   }
+  const prefs = loadChatPreferences();
   const target = preferencesEventTarget();
   if (target !== undefined) {
     target.dispatchEvent(new CustomEvent(CHAT_PREFERENCES_CHANGED_EVENT, { detail: prefs }));
