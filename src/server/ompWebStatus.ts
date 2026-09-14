@@ -12,7 +12,7 @@ import { parseOmpWebComponentStatus, parseOmpWebRuntimeComponent } from "../shar
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import { isRecord } from "./utils.js";
 
-const OMP_WEB_PACKAGE_NAME = "@ProgmRuanSilva/omp-web";
+const OMP_WEB_PACKAGE_NAME = "@theruansilva/omp-web";
 const OMP_WEB_NPM_SOURCE = `npm:${OMP_WEB_PACKAGE_NAME}`;
 const DEFAULT_VERSION = "0.0.0-dev";
 const LATEST_RELEASE_CACHE_MS = 6 * 60 * 60 * 1000;

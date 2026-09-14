@@ -15,7 +15,7 @@ import {
 } from "./cli/serviceTemplates.js";
 
 
-const OMP_WEB_PACKAGE_NAME = "@progmruansilva/omp-web";
+const OMP_WEB_PACKAGE_NAME = "@theruansilva/omp-web";
 
 const systemdServiceDir = join(homedir(), ".config", "systemd", "user");
 const launchdServiceDir = join(homedir(), "Library", "LaunchAgents");
@@ -430,8 +430,8 @@ function validateDevCheckout(root: string): void {
   }
 
   const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-  if (!isRecord(parsed) || (parsed["name"] !== "@progmruansilva/omp-web" && parsed["name"] !== "@theruansilva/omp-web")) {
-    throw new Error(`Development mode must be installed from an OMP WEB checkout. ${packageJsonPath} is not @progmruansilva/omp-web or @theruansilva/omp-web.`);
+  if (!isRecord(parsed) || (parsed["name"] !== "@theruansilva/omp-web" && parsed["name"] !== "@theruansilva/omp-web")) {
+    throw new Error(`Development mode must be installed from an OMP WEB checkout. ${packageJsonPath} is not @theruansilva/omp-web or @theruansilva/omp-web.`);
   }
 
   const scripts = parsed["scripts"];
@@ -957,7 +957,7 @@ Usage:
   else if (command === "update") update();
 
 Recommended install:
-  bun add -g @progmruansilva/omp-web
+  bun add -g @theruansilva/omp-web
   omp-web install
 
 Development service install from a checkout:

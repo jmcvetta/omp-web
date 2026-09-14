@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
 set -eu
 
-bun add -g @progmruansilva/omp-web
+bun add -g @theruansilva/omp-web
 omp-web install

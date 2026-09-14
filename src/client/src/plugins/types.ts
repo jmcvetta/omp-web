@@ -144,7 +144,7 @@ export interface WorkspacePanelContext extends WorkspaceContext {
  terminal: WorkspacePanelTerminal;
  /**
   * @deprecated Runtime-only compatibility alias for pre-v2 plugins. Use `terminal.open()` instead.
-  * This is intentionally not part of the public `@ProgmRuanSilva/omp-web/plugin-api` declarations.
+  * This is intentionally not part of the public `@theruansilva/omp-web/plugin-api` declarations.
   */
  openTerminal?: (options?: { terminalId?: string | undefined }) => void;
  ompWebUnstable?: Pick<OmpWebUnstableRuntimeContext, "terminalCommandRuns">;

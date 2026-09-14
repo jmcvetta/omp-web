@@ -82,7 +82,7 @@ async function injectRequest(
   const init: RequestInit = {
     method: options.method,
     headers: options.payload !== undefined ? { "content-type": "application/json" } : {},
-    body: options.payload !== undefined ? JSON.stringify(options.payload) : undefined,
+    ...(options.payload !== undefined ? { body: JSON.stringify(options.payload) } : {}),
   };
   const res = await honoApp.request(options.url, init);
   const text = await res.text();
@@ -104,7 +104,7 @@ class FakeTerminals implements TerminalRouteService {
   }
 
   create(_options: { cwd: string; name?: string; cols?: number; rows?: number }): TerminalInfo {
-    return { id: "t1", title: "Terminal", processId: 10, cwd: "/repo" };
+    return { id: "t1", name: "Terminal", cwd: "/repo", createdAt: "2026-03-31T00:00:00.000Z", exited: false };
   }
 
   closeForCwd(cwd: string): void {
@@ -135,7 +135,7 @@ class FakeTerminals implements TerminalRouteService {
 
   continue(id: string): TerminalInfo {
     this.events.push(`continue:${id}`);
-    return { id, title: "Continued", processId: 12, cwd: "/repo" };
+    return { id, name: "Continued", cwd: "/repo", createdAt: "2026-03-31T00:00:00.000Z", exited: false };
   }
 
   runCommand(options: RunTerminalCommandOptions): TerminalCommandRun {
@@ -148,10 +148,8 @@ class FakeTerminals implements TerminalRouteService {
       title: options.title,
       command: options.command,
       status: "running",
-      exitCode: null,
-      error: null,
+      createdAt: "2026-03-31T00:00:00.000Z",
       startedAt: "2026-03-31T00:00:00.000Z",
-      finishedAt: null,
       metadata: routeMetadata(options.metadata),
     };
     this.runs.set(run.id, run);

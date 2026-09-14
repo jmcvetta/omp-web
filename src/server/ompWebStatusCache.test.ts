@@ -51,13 +51,13 @@ describe("createOmpWebStatusCache", () => {
 
 function status(generatedAt: string): OmpWebStatusResponse {
   return {
-    packageName: "@ProgmRuanSilva/omp-web",
+    packageName: "@theruansilva/omp-web",
     generatedAt,
     components: {
       web: { component: "web", label: "Web/UI", stale: false, available: true },
       sessiond: { component: "sessiond", label: "Session daemon", stale: false, available: true },
     },
-    release: { packageName: "@ProgmRuanSilva/omp-web", updateAvailable: false },
+    release: { packageName: "@theruansilva/omp-web", updateAvailable: false },
     commands: {},
     messages: [],
   };

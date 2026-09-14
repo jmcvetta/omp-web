@@ -7,7 +7,7 @@ import type { OmpWebComponentStatus, OmpWebInstallationInfo, OmpWebVersionRespon
 import { parseOmpWebComponentStatus, parseOmpWebVersionResponse } from "./shared/ompWebStatusParsing.js";
 import { errorMessage, isRecord } from "./server/utils.js";
 
-const OMP_WEB_PACKAGE_NAME = "@ProgmRuanSilva/omp-web";
+const OMP_WEB_PACKAGE_NAME = "@theruansilva/omp-web";
 const OMP_WEB_VERSION_TIMEOUT_MS = 2000;
 const OMP_WEB_VERSION_ENDPOINT_PATH = "/api/omp-web/version";
 const OMP_WEB_STATUS_ENDPOINT_PATH = "/api/omp-web/status";
