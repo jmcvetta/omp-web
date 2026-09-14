@@ -154,10 +154,10 @@ export class SettingsGeneralPanel extends LitElement {
   }
   private renderChatDisplaySettings(): TemplateResult {
     return html`
-      <section class="settings-card" aria-label="Chat display settings">
+      <section class="settings-card" aria-label="Chat settings">
         <div class="card-heading">
-          <h3>Chat display</h3>
-          <p>Configure which elements are visible in the chat transcript and agent status.</p>
+          <h3>Chat</h3>
+          <p>Configure the chat transcript, agent status, and prompt editor.</p>
         </div>
         <div class="chat-display-options">
           <label class="toggle-row">
@@ -186,6 +186,13 @@ export class SettingsGeneralPanel extends LitElement {
             <div class="toggle-copy">
               <strong>Show agent status</strong>
               <small>Display the neutral agent activity indicator</small>
+            </div>
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" .checked=${this.chatPrefs.vimMode} @change=${(e: Event) => { this.updateChatPref("vimMode", e); }} />
+            <div class="toggle-copy">
+              <strong>Vim keybindings</strong>
+              <small>Use Vim motions and modes in the prompt editor</small>
             </div>
           </label>
           <label class="toggle-row">

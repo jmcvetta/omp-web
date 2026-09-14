@@ -44,6 +44,7 @@ describe("chatPreferences", () => {
       showEvents: false,
       showToolExecutions: true,
       showAgentStatus: false,
+      vimMode: true,
       showStatusBar: true,
       hideWorkspaces: true,
       bottomMobileNav: true,
@@ -60,6 +61,7 @@ describe("chatPreferences", () => {
     expect(loaded.showEvents).toBe(true);
     expect(loaded.showToolExecutions).toBe(true);
     expect(loaded.showAgentStatus).toBe(true);
+    expect(loaded.vimMode).toBe(false);
     expect(loaded.showStatusBar).toBe(false);
     expect(loaded.hideWorkspaces).toBe(false);
     expect(loaded.bottomMobileNav).toBe(false);
@@ -80,6 +82,7 @@ describe("chatPreferences", () => {
       showEvents: false,
       showToolExecutions: false,
       showAgentStatus: true,
+      vimMode: true,
       showStatusBar: true,
       hideWorkspaces: true,
       bottomMobileNav: true,

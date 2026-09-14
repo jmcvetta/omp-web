@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add optional Vim keybindings to the prompt editor.
+
 ## v2.0.0
 
 - 🚀 Complete migration of backend services (`sessiond` and `app`) from Fastify to Hono and native `Bun.serve`.

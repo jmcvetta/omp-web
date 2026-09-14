@@ -3,6 +3,7 @@ export interface ChatPreferences {
   showEvents: boolean;
   showToolExecutions: boolean;
   showAgentStatus: boolean;
+  vimMode: boolean;
   showStatusBar: boolean;
   hideWorkspaces: boolean;
   bottomMobileNav: boolean;
@@ -14,6 +15,7 @@ export const DEFAULT_CHAT_PREFERENCES: ChatPreferences = {
   showEvents: true,
   showToolExecutions: true,
   showAgentStatus: true,
+  vimMode: false,
   showStatusBar: false,
   hideWorkspaces: false,
   bottomMobileNav: false,
@@ -43,6 +45,7 @@ export function isChatPreferences(value: unknown): value is ChatPreferences {
     typeof candidate["showEvents"] === "boolean" &&
     typeof candidate["showToolExecutions"] === "boolean" &&
     typeof candidate["showAgentStatus"] === "boolean" &&
+    typeof candidate["vimMode"] === "boolean" &&
     typeof candidate["showStatusBar"] === "boolean" &&
     typeof candidate["hideWorkspaces"] === "boolean" &&
     typeof candidate["bottomMobileNav"] === "boolean" &&
@@ -63,6 +66,7 @@ export function loadChatPreferences(): ChatPreferences {
       showEvents: typeof record["showEvents"] === "boolean" ? record["showEvents"] : DEFAULT_CHAT_PREFERENCES.showEvents,
       showToolExecutions: typeof record["showToolExecutions"] === "boolean" ? record["showToolExecutions"] : DEFAULT_CHAT_PREFERENCES.showToolExecutions,
       showAgentStatus: typeof record["showAgentStatus"] === "boolean" ? record["showAgentStatus"] : DEFAULT_CHAT_PREFERENCES.showAgentStatus,
+      vimMode: typeof record["vimMode"] === "boolean" ? record["vimMode"] : DEFAULT_CHAT_PREFERENCES.vimMode,
       showStatusBar: typeof record["showStatusBar"] === "boolean" ? record["showStatusBar"] : DEFAULT_CHAT_PREFERENCES.showStatusBar,
       hideWorkspaces: typeof record["hideWorkspaces"] === "boolean" ? record["hideWorkspaces"] : DEFAULT_CHAT_PREFERENCES.hideWorkspaces,
       bottomMobileNav: typeof record["bottomMobileNav"] === "boolean" ? record["bottomMobileNav"] : DEFAULT_CHAT_PREFERENCES.bottomMobileNav,
