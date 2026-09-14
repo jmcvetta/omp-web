@@ -59,6 +59,23 @@ describe("machine-scoped runtime API", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines/remote%20a/runtime");
   });
+
+  it("unpacks machines array from the server object response", async () => {
+    const fetchMock = stubJsonFetch({
+      machines: [
+        { id: "local", name: "Local", kind: "local", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
+        { id: "m1", name: "Notebook", kind: "remote", baseUrl: "http://100.1.2.3:8504", createdAt: "now", updatedAt: "now" },
+      ],
+    });
+
+    const result = await machinesApi.machines();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines");
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("local");
+    expect(result[1].id).toBe("m1");
+  });
 });
 
 describe("settings config and plugin APIs", () => {

@@ -111,8 +111,10 @@ export const ompWebApi = {
 };
 
 export const machinesApi = {
-  machines: () =>
-    request<Machine[]>("/api/machines"),
+  machines: async (): Promise<Machine[]> => {
+    const response = await request<{ machines?: Machine[] } | Machine[]>("/api/machines");
+    return Array.isArray(response) ? response : (response.machines ?? []);
+  },
   addMachine: (input: { name: string; baseUrl: string; token?: string }) =>
     request<Machine>("/api/machines", { method: "POST", body: JSON.stringify(input) }),
   deleteMachine: (machineId: string) =>
