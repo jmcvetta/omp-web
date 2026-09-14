@@ -73,8 +73,8 @@ describe("machine-scoped runtime API", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchCall(fetchMock, 0)[0]).toBe("/api/machines");
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe("local");
-    expect(result[1].id).toBe("m1");
+    expect(result[0]?.id).toBe("local");
+    expect(result[1]?.id).toBe("m1");
   });
 });
 
